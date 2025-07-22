@@ -10,9 +10,9 @@ pub fn implement_from_entry(item: proc_macro::TokenStream) -> proc_macro::TokenS
         match input.data {
             syn::Data::Struct(DataStruct { fields, .. }) => match fields {
                 Fields::Named(f) => f,
-                _ => unimplemented!("Structs fields/attributes must be named to be derivable"),
+                _ => panic!("Structs fields/attributes must be named to be derivable"),
             },
-            _ => unimplemented!("non-struct derives are not supported yet"),
+            _ => unimplemented!("non-struct derives are not supported"),
         }
         .named,
     ) {
@@ -25,7 +25,7 @@ pub fn implement_from_entry(item: proc_macro::TokenStream) -> proc_macro::TokenS
     let field_names = fields.iter().map(|x| x.ident());
     let attribute_names = fields.iter().map(|x| x.attribute_name.clone());
     quote!(
-        impl lapdog::search::Entry for #name {
+        impl lapdog::search::FromEntry for #name {
             fn from_entry(entry: lapdog::search::RawEntry) -> Result<#name, lapdog::search::FailedToGetFromEntry> {
                 #( #field_quotes )*
                 Ok(#name { #(#field_names,)* #insert_object_name })

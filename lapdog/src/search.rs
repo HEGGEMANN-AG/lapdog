@@ -1,5 +1,4 @@
 use std::{
-    fmt::Display,
     io::{ErrorKind, Read, Write},
     marker::PhantomData,
 };
@@ -13,6 +12,8 @@ use rasn_ldap::{
     SearchRequestDerefAliases, SearchRequestScope, SearchResultDone, SearchResultEntry, SearchResultReference,
 };
 
+mod impl_traits;
+
 impl<T> LdapConnection<T> {
     pub fn search<'connection, Output>(
         &'connection mut self,
@@ -22,9 +23,9 @@ impl<T> LdapConnection<T> {
         filter: Filter,
     ) -> Result<SearchResults<'connection, T, Output>, std::io::Error>
     where
-        Output: Entry,
+        Output: FromEntry,
     {
-        let attributes: Vec<LdapString> = match <Output as Entry>::attributes() {
+        let attributes: Vec<LdapString> = match <Output as FromEntry>::attributes() {
             None => vec!["*".into()],
             Some(iter) => iter.map(|x| x.to_string().into()).collect(),
         };
@@ -49,7 +50,7 @@ impl<T> LdapConnection<T> {
     }
 }
 
-pub trait Entry: Sized {
+pub trait FromEntry: Sized {
     fn from_entry(entry: RawEntry) -> Result<Self, FailedToGetFromEntry>;
 
     fn attributes() -> Option<impl Iterator<Item = &'static str>> {
@@ -76,41 +77,6 @@ pub trait FromOctetString: Sized {
     fn from_octet_string(bytes: &[u8]) -> Result<Self, Self::Err>;
 }
 
-impl FromOctetString for String {
-    type Err = std::string::FromUtf8Error;
-    fn from_octet_string(bytes: &[u8]) -> Result<Self, Self::Err> {
-        String::from_utf8(bytes.to_vec())
-    }
-}
-impl FromOctetString for u32 {
-    type Err = ParseNumberError;
-    fn from_octet_string(bytes: &[u8]) -> Result<Self, Self::Err> {
-        let s = str::from_utf8(bytes).map_err(ParseNumberError::Utf8)?;
-        s.parse::<u32>().map_err(ParseNumberError::Parse)
-    }
-}
-#[derive(Clone, Debug)]
-pub enum ParseNumberError {
-    Utf8(std::str::Utf8Error),
-    Parse(std::num::ParseIntError),
-}
-impl std::error::Error for ParseNumberError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::Parse(p) => Some(p),
-            Self::Utf8(utf8) => Some(utf8),
-        }
-    }
-}
-impl Display for ParseNumberError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Utf8(u) => write!(f, "server response is not utf-8: {u}"),
-            Self::Parse(p) => write!(f, "failed to parse integer from response: {p}"),
-        }
-    }
-}
-
 pub struct SearchResults<'connection, T, Output> {
     connection: &'connection mut LdapConnection<T>,
     remainder: Option<Vec<u8>>,
@@ -119,7 +85,7 @@ pub struct SearchResults<'connection, T, Output> {
 const TEMP_BUFFER_LENGTH: usize = 1024;
 impl<'connection, T, Output> Iterator for SearchResults<'connection, T, Output>
 where
-    Output: Entry,
+    Output: FromEntry,
 {
     type Item = Result<Output, SearchResultError>;
 
@@ -202,7 +168,7 @@ pub struct Attribute {
     pub r#type: String,
     pub values: Vec<Vec<u8>>,
 }
-impl Entry for RawEntry {
+impl FromEntry for RawEntry {
     fn from_entry(entry: RawEntry) -> Result<Self, FailedToGetFromEntry> {
         Ok(entry)
     }
