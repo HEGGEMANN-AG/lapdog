@@ -1,0 +1,8 @@
+[package]
+name = "lapdog"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+rasn = "0.27.0"
+rasn-ldap = "0.27.0"
