@@ -44,7 +44,7 @@ impl<T> LdapConnection<T> {
         _controls: Option<()>,
     ) -> Result<ProtocolOp, MessageError> {
         let message = LdapMessage::new(self.get_and_increase_message_id(), protocol_op);
-        let encoded = rasn::ber::encode(&message).unwrap();
+        let encoded = rasn::ber::encode(&message).expect("Failed to encode BER message");
         self.tcp.write_all(&encoded).map_err(MessageError::Io)?;
         let mut buf = Vec::new();
         let mut temp_buffer = [0u8; 1024];

@@ -1,4 +1,5 @@
 use std::{
+    fmt::Display,
     io::{ErrorKind, Read, Write},
     marker::PhantomData,
 };
@@ -37,7 +38,8 @@ impl<T> LdapConnection<T> {
             filter,
             attributes,
         ));
-        let encoded = rasn::ber::encode(&LdapMessage::new(self.get_and_increase_message_id(), protocol)).unwrap();
+        let encoded = rasn::ber::encode(&LdapMessage::new(self.get_and_increase_message_id(), protocol))
+            .expect("Failed to encode BER message");
         self.tcp.write_all(&encoded)?;
         Ok(SearchResults {
             connection: self,
@@ -47,10 +49,8 @@ impl<T> LdapConnection<T> {
     }
 }
 
-pub trait Entry {
-    fn from_entry(entry: RawEntry) -> Result<Self, FailedToGetFromEntry>
-    where
-        Self: std::marker::Sized;
+pub trait Entry: Sized {
+    fn from_entry(entry: RawEntry) -> Result<Self, FailedToGetFromEntry>;
 
     fn attributes() -> Option<impl Iterator<Item = &'static str>> {
         None::<std::iter::Empty<&str>>
@@ -59,29 +59,55 @@ pub trait Entry {
 #[derive(Debug)]
 pub enum FailedToGetFromEntry {
     MissingField(&'static str),
+    FailedToParseField(&'static str, Box<dyn std::error::Error>),
 }
 impl std::error::Error for FailedToGetFromEntry {}
 impl std::fmt::Display for FailedToGetFromEntry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::MissingField(field) => write!(f, "Server did not send field \"{field}\""),
+            Self::FailedToParseField(field, error) => write!(f, "Failed to parse field \"{field}\": {error}"),
         }
     }
 }
 
-pub trait FromOctetString {
-    fn from_octet_string(bytes: &[u8]) -> Self;
+pub trait FromOctetString: Sized {
+    type Err: std::error::Error;
+    fn from_octet_string(bytes: &[u8]) -> Result<Self, Self::Err>;
 }
 
 impl FromOctetString for String {
-    fn from_octet_string(bytes: &[u8]) -> Self {
-        String::from_utf8(bytes.to_vec()).unwrap()
+    type Err = std::string::FromUtf8Error;
+    fn from_octet_string(bytes: &[u8]) -> Result<Self, Self::Err> {
+        String::from_utf8(bytes.to_vec())
     }
 }
 impl FromOctetString for u32 {
-    fn from_octet_string(bytes: &[u8]) -> Self {
-        let s = str::from_utf8(bytes).unwrap();
-        s.parse().unwrap()
+    type Err = ParseNumberError;
+    fn from_octet_string(bytes: &[u8]) -> Result<Self, Self::Err> {
+        let s = str::from_utf8(bytes).map_err(ParseNumberError::Utf8)?;
+        s.parse::<u32>().map_err(ParseNumberError::Parse)
+    }
+}
+#[derive(Clone, Debug)]
+pub enum ParseNumberError {
+    Utf8(std::str::Utf8Error),
+    Parse(std::num::ParseIntError),
+}
+impl std::error::Error for ParseNumberError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Parse(p) => Some(p),
+            Self::Utf8(utf8) => Some(utf8),
+        }
+    }
+}
+impl Display for ParseNumberError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Utf8(u) => write!(f, "server response is not utf-8: {u}"),
+            Self::Parse(p) => write!(f, "failed to parse integer from response: {p}"),
+        }
     }
 }
 
@@ -189,6 +215,7 @@ pub enum SearchResultError {
     /// Message was not a valid search response message
     InvalidLdapMessage(ProtocolOp),
     MissingField(&'static str),
+    FailedToParseField(&'static str, Box<dyn std::error::Error + 'static>),
     Io(std::io::Error),
 }
 impl std::error::Error for SearchResultError {
@@ -196,6 +223,7 @@ impl std::error::Error for SearchResultError {
         match self {
             Self::Io(io) => Some(io),
             Self::MalformedLdapMessage(de) => Some(de),
+            Self::FailedToParseField(_, b) => Some(b.as_ref()),
             _ => None,
         }
     }
@@ -206,6 +234,7 @@ impl std::fmt::Display for SearchResultError {
             Self::Io(io) => write!(f, "io error: {io}"),
             Self::InvalidLdapMessage(_ro) => write!(f, "Server sent non-search response"),
             Self::MissingField(field) => write!(f, "Server did not sent field \"{field}\""),
+            Self::FailedToParseField(field, err) => write!(f, "Failed to parse field \"{field}\": {err}"),
             Self::MalformedLdapMessage(mal) => write!(f, "couldn't decode server response: {mal}"),
         }
     }
@@ -214,6 +243,7 @@ impl From<FailedToGetFromEntry> for SearchResultError {
     fn from(value: FailedToGetFromEntry) -> Self {
         match value {
             FailedToGetFromEntry::MissingField(f) => Self::MissingField(f),
+            FailedToGetFromEntry::FailedToParseField(field, err) => Self::FailedToParseField(field, err),
         }
     }
 }

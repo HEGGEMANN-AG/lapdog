@@ -7,7 +7,8 @@ use crate::LdapConnection;
 impl<T> LdapConnection<T> {
     pub fn unbind(mut self) -> Result<(), UnbindError> {
         let proto = ProtocolOp::UnbindRequest(UnbindRequest {});
-        let encoded = rasn::ber::encode(&LdapMessage::new(self.get_and_increase_message_id(), proto)).unwrap();
+        let encoded = rasn::ber::encode(&LdapMessage::new(self.get_and_increase_message_id(), proto))
+            .expect("Failed to encode BER message");
         self.tcp.write_all(&encoded).map_err(UnbindError)
     }
 }

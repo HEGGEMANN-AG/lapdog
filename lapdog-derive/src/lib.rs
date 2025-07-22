@@ -40,7 +40,7 @@ pub fn implement_from_entry(item: proc_macro::TokenStream) -> proc_macro::TokenS
 }
 
 fn insert_object_name(field: &Field) -> TokenStream {
-    let field_name = field.ident.as_ref().unwrap();
+    let field_name = field.ident.as_ref().expect("checked to be named field");
     let ty = &field.ty;
     quote! {
         #field_name: <#ty as From<String>>::from(entry.object_name)
@@ -123,6 +123,6 @@ fn field_line(data: &AttributeField) -> TokenStream {
                 .find(|x| x.r#type == #lookup_name)
                 .ok_or(lapdog::search::FailedToGetFromEntry::MissingField(#lookup_name))?
                 .values[0]
-            );
+            ).map_err(|b| lapdog::search::FailedToGetFromEntry::FailedToParseField(#lookup_name, Box::new(b)))?;
     }
 }
