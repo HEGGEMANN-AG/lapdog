@@ -11,4 +11,5 @@ rasn-ldap = "0.27.0"
 lapdog-derive = { version = "0.1.0", optional = true, path = "../lapdog-derive" }
 
 [features]
-derive = ["dep:lapdog-derive"]
+derive = ["dep:lapdog-derive", "from_octets"]
+from_octets = []

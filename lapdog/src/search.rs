@@ -12,6 +12,7 @@ use rasn_ldap::{
     SearchRequestDerefAliases, SearchRequestScope, SearchResultDone, SearchResultEntry, SearchResultReference,
 };
 
+#[cfg(feature = "from_octets")]
 mod impl_traits;
 
 impl<T> LdapConnection<T> {
@@ -72,10 +73,13 @@ impl std::fmt::Display for FailedToGetFromEntry {
     }
 }
 
+#[cfg(feature = "from_octets")]
 pub trait FromOctetString: Sized {
     type Err: std::error::Error;
     fn from_octet_string(bytes: &[u8]) -> Result<Self, Self::Err>;
 }
+
+#[cfg(feature = "from_octets")]
 pub trait FromMultipleOctetStrings: Sized {
     type Err: std::error::Error;
     fn from_multiple_octet_strings<'a>(values: impl Iterator<Item = &'a [u8]>) -> Result<Self, Self::Err>;
