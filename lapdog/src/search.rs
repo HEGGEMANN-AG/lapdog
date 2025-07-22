@@ -41,7 +41,7 @@ impl<T> LdapConnection<T> {
     }
 }
 
-pub trait FromEntry {
+pub trait Entry {
     fn from_entry(entry: RawEntry) -> Self;
 }
 pub trait FromOctetString {
@@ -56,7 +56,7 @@ pub struct SearchResults<'connection, T, Output> {
 const TEMP_BUFFER_LENGTH: usize = 1024;
 impl<'connection, T, Output> Iterator for SearchResults<'connection, T, Output>
 where
-    Output: FromEntry,
+    Output: Entry,
 {
     type Item = Result<Output, SearchResultError>;
 
@@ -139,7 +139,7 @@ pub struct Attribute {
     pub r#type: String,
     pub values: Vec<Vec<u8>>,
 }
-impl FromEntry for RawEntry {
+impl Entry for RawEntry {
     fn from_entry(entry: RawEntry) -> Self {
         entry
     }
