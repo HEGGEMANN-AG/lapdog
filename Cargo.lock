@@ -106,6 +106,7 @@ checksum = "4a5f13b858c8d314ee3e8f639011f7ccefe71f97f96e50151fb991f267928e2c"
 name = "lapdog"
 version = "0.1.0"
 dependencies = [
+ "lapdog-derive",
  "rasn",
  "rasn-ldap",
 ]
@@ -113,6 +114,11 @@ dependencies = [
 [[package]]
 name = "lapdog-derive"
 version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
 
 [[package]]
 name = "libc"

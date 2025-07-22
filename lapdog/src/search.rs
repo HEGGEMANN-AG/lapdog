@@ -3,13 +3,14 @@ use std::{
     marker::PhantomData,
 };
 
+use crate::LdapConnection;
+#[cfg(feature = "derive")]
+pub use lapdog_derive::Entry;
 use rasn::error::DecodeError;
 use rasn_ldap::{
     Filter, LdapMessage, LdapResult, LdapString, PartialAttribute, ProtocolOp, ResultCode, SearchRequest,
     SearchRequestDerefAliases, SearchRequestScope, SearchResultDone, SearchResultEntry, SearchResultReference,
 };
-
-use crate::LdapConnection;
 
 impl<T> LdapConnection<T> {
     pub fn search<'connection, Output>(
@@ -18,9 +19,14 @@ impl<T> LdapConnection<T> {
         scope: SearchRequestScope,
         deref_aliases: SearchRequestDerefAliases,
         filter: Filter,
-        attributes: &[&str],
-    ) -> Result<SearchResults<'connection, T, Output>, std::io::Error> {
-        let attributes: Vec<LdapString> = attributes.iter().map(|x| x.to_string().into()).collect();
+    ) -> Result<SearchResults<'connection, T, Output>, std::io::Error>
+    where
+        Output: Entry,
+    {
+        let attributes: Vec<LdapString> = match <Output as Entry>::attributes() {
+            None => vec!["*".into()],
+            Some(iter) => iter.map(|x| x.to_string().into()).collect(),
+        };
         let protocol = ProtocolOp::SearchRequest(SearchRequest::new(
             base.into(),
             scope,
@@ -42,10 +48,41 @@ impl<T> LdapConnection<T> {
 }
 
 pub trait Entry {
-    fn from_entry(entry: RawEntry) -> Self;
+    fn from_entry(entry: RawEntry) -> Result<Self, FailedToGetFromEntry>
+    where
+        Self: std::marker::Sized;
+
+    fn attributes() -> Option<impl Iterator<Item = &'static str>> {
+        None::<std::iter::Empty<&str>>
+    }
 }
+#[derive(Debug)]
+pub enum FailedToGetFromEntry {
+    MissingField(&'static str),
+}
+impl std::error::Error for FailedToGetFromEntry {}
+impl std::fmt::Display for FailedToGetFromEntry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::MissingField(field) => write!(f, "Server did not send field \"{field}\""),
+        }
+    }
+}
+
 pub trait FromOctetString {
     fn from_octet_string(bytes: &[u8]) -> Self;
+}
+
+impl FromOctetString for String {
+    fn from_octet_string(bytes: &[u8]) -> Self {
+        String::from_utf8(bytes.to_vec()).unwrap()
+    }
+}
+impl FromOctetString for u32 {
+    fn from_octet_string(bytes: &[u8]) -> Self {
+        let s = str::from_utf8(bytes).unwrap();
+        s.parse().unwrap()
+    }
 }
 
 pub struct SearchResults<'connection, T, Output> {
@@ -101,7 +138,7 @@ where
                                     object_name,
                                     attributes,
                                 };
-                                return Some(Ok(Output::from_entry(entry)));
+                                return Some(Output::from_entry(entry).map_err(Into::into));
                             }
                             ProtocolOp::SearchResRef(SearchResultReference(_)) => continue,
                             po => return Some(Err(SearchResultError::InvalidLdapMessage(po))),
@@ -140,8 +177,8 @@ pub struct Attribute {
     pub values: Vec<Vec<u8>>,
 }
 impl Entry for RawEntry {
-    fn from_entry(entry: RawEntry) -> Self {
-        entry
+    fn from_entry(entry: RawEntry) -> Result<Self, FailedToGetFromEntry> {
+        Ok(entry)
     }
 }
 
@@ -151,6 +188,7 @@ pub enum SearchResultError {
     MalformedLdapMessage(DecodeError),
     /// Message was not a valid search response message
     InvalidLdapMessage(ProtocolOp),
+    MissingField(&'static str),
     Io(std::io::Error),
 }
 impl std::error::Error for SearchResultError {
@@ -167,7 +205,15 @@ impl std::fmt::Display for SearchResultError {
         match self {
             Self::Io(io) => write!(f, "io error: {io}"),
             Self::InvalidLdapMessage(_ro) => write!(f, "Server sent non-search response"),
+            Self::MissingField(field) => write!(f, "Server did not sent field \"{field}\""),
             Self::MalformedLdapMessage(mal) => write!(f, "couldn't decode server response: {mal}"),
+        }
+    }
+}
+impl From<FailedToGetFromEntry> for SearchResultError {
+    fn from(value: FailedToGetFromEntry) -> Self {
+        match value {
+            FailedToGetFromEntry::MissingField(f) => Self::MissingField(f),
         }
     }
 }
