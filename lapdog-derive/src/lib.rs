@@ -117,12 +117,14 @@ fn field_line(data: &AttributeField) -> TokenStream {
     let field_type = &data.field.ty;
     let varname = format_ident!("{}", data.ident());
     quote! {
-        let #varname = <#field_type as lapdog::search::FromOctetString>::from_octet_string(
-            &entry.attributes
+        let #varname = <#field_type as lapdog::search::FromMultipleOctetStrings>::from_multiple_octet_strings(
+            entry.attributes
                 .iter()
                 .find(|x| x.r#type == #lookup_name)
                 .ok_or(lapdog::search::FailedToGetFromEntry::MissingField(#lookup_name))?
-                .values[0]
+                .values
+                .iter()
+                .map(|x| x.as_ref())
             ).map_err(|b| lapdog::search::FailedToGetFromEntry::FailedToParseField(#lookup_name, Box::new(b)))?;
     }
 }

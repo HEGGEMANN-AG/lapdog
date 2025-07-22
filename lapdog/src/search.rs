@@ -76,6 +76,10 @@ pub trait FromOctetString: Sized {
     type Err: std::error::Error;
     fn from_octet_string(bytes: &[u8]) -> Result<Self, Self::Err>;
 }
+pub trait FromMultipleOctetStrings: Sized {
+    type Err: std::error::Error;
+    fn from_multiple_octet_strings<'a>(values: impl Iterator<Item = &'a [u8]>) -> Result<Self, Self::Err>;
+}
 
 pub struct SearchResults<'connection, T, Output> {
     connection: &'connection mut LdapConnection<T>,
