@@ -6,7 +6,7 @@ use std::{
 
 use rasn_ldap::{AuthenticationChoice, BindRequest, BindResponse, LdapMessage, LdapString, ProtocolOp, ResultCode};
 
-mod search;
+pub mod search;
 mod unbind;
 
 pub struct Bound {

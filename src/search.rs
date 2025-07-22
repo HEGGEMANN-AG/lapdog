@@ -1,4 +1,7 @@
-use std::io::{ErrorKind, Read, Write};
+use std::{
+    io::{ErrorKind, Read, Write},
+    marker::PhantomData,
+};
 
 use rasn::error::DecodeError;
 use rasn_ldap::{
@@ -9,14 +12,14 @@ use rasn_ldap::{
 use crate::LdapConnection;
 
 impl<T> LdapConnection<T> {
-    pub fn search<'connection>(
+    pub fn search<'connection, Output>(
         &'connection mut self,
         base: &str,
         scope: SearchRequestScope,
         deref_aliases: SearchRequestDerefAliases,
         filter: Filter,
         attributes: &[&str],
-    ) -> Result<SearchResults<'connection, T>, std::io::Error> {
+    ) -> Result<SearchResults<'connection, T, Output>, std::io::Error> {
         let attributes: Vec<LdapString> = attributes.iter().map(|x| x.to_string().into()).collect();
         let protocol = ProtocolOp::SearchRequest(SearchRequest::new(
             base.into(),
@@ -33,17 +36,29 @@ impl<T> LdapConnection<T> {
         Ok(SearchResults {
             connection: self,
             remainder: None,
+            _out: PhantomData,
         })
     }
 }
 
-pub struct SearchResults<'connection, T> {
+pub trait FromEntry {
+    fn from_entry(entry: RawEntry) -> Self;
+}
+pub trait FromOctetString {
+    fn from_octet_string(bytes: &[u8]) -> Self;
+}
+
+pub struct SearchResults<'connection, T, Output> {
     connection: &'connection mut LdapConnection<T>,
     remainder: Option<Vec<u8>>,
+    _out: PhantomData<Output>,
 }
 const TEMP_BUFFER_LENGTH: usize = 1024;
-impl<'connection, T> Iterator for SearchResults<'connection, T> {
-    type Item = Result<Entry, SearchResultError>;
+impl<'connection, T, Output> Iterator for SearchResults<'connection, T, Output>
+where
+    Output: FromEntry,
+{
+    type Item = Result<Output, SearchResultError>;
 
     fn next(&mut self) -> Option<Self::Item> {
         let mut buf = Vec::with_capacity(2048);
@@ -82,10 +97,11 @@ impl<'connection, T> Iterator for SearchResults<'connection, T> {
                                         },
                                     )
                                     .collect();
-                                return Some(Ok(Entry {
+                                let entry = RawEntry {
                                     object_name,
                                     attributes,
-                                }));
+                                };
+                                return Some(Ok(Output::from_entry(entry)));
                             }
                             ProtocolOp::SearchResRef(SearchResultReference(_)) => continue,
                             po => return Some(Err(SearchResultError::InvalidLdapMessage(po))),
@@ -114,7 +130,7 @@ impl<'connection, T> Iterator for SearchResults<'connection, T> {
 }
 
 #[derive(Debug)]
-pub struct Entry {
+pub struct RawEntry {
     pub object_name: String,
     pub attributes: Vec<Attribute>,
 }
@@ -122,6 +138,11 @@ pub struct Entry {
 pub struct Attribute {
     pub r#type: String,
     pub values: Vec<Vec<u8>>,
+}
+impl FromEntry for RawEntry {
+    fn from_entry(entry: RawEntry) -> Self {
+        entry
+    }
 }
 
 #[derive(Debug)]
