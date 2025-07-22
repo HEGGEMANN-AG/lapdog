@@ -41,6 +41,16 @@ impl<T: FromOctetString> FromOctetString for Saturating<T> {
         Ok(Saturating(T::from_octet_string(bytes)?))
     }
 }
+impl FromOctetString for bool {
+    type Err = ParseBoolError;
+    fn from_octet_string(bytes: &[u8]) -> Result<Self, Self::Err> {
+        match bytes {
+            b"TRUE" => Ok(true),
+            b"FALSE" => Ok(false),
+            _ => Err(ParseBoolError),
+        }
+    }
+}
 from_octet_for_integer!(u8);
 from_octet_for_integer!(u16);
 from_octet_for_integer!(u32);
@@ -121,5 +131,13 @@ impl Display for ParseIntegerError {
             Self::Utf8(u) => write!(f, "server response is not utf-8: {u}"),
             Self::Parse(p) => write!(f, "failed to parse integer from response: {p}"),
         }
+    }
+}
+#[derive(Clone, Copy, Debug)]
+pub struct ParseBoolError;
+impl std::error::Error for ParseBoolError {}
+impl Display for ParseBoolError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "value was not 'TRUE' or 'FALSE'")
     }
 }
