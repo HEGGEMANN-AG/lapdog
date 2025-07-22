@@ -1,7 +1,9 @@
 [package]
 name = "lapdog"
+authors = ["Niclas Klugmann <niclas@klugmann.de>"]
 version = "0.1.0"
 edition = "2024"
+description = "A safer sync LDAP library"
 
 [dependencies]
 rasn = "0.27.0"
