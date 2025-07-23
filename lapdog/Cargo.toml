@@ -6,6 +6,7 @@ repository.workspace = true
 version = "0.1.0"
 edition = "2024"
 description = "A safer sync LDAP library"
+documentation = "https://docs.rs/lapdog"
 
 [dependencies]
 rasn = "0.27.0"
