@@ -82,19 +82,25 @@ pub trait FromEntry: Sized {
 #[derive(Debug)]
 pub enum FailedToGetFromEntry {
     MissingField(&'static str),
+    TooManyValues(&'static str),
     FailedToParseField(&'static str, Box<dyn Error>),
 }
 impl Error for FailedToGetFromEntry {}
 impl Display for FailedToGetFromEntry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::MissingField(field) => write!(f, "Server did not send field \"{field}\""),
-            Self::FailedToParseField(field, error) => write!(f, "Failed to parse field \"{field}\": {error}"),
+            Self::MissingField(field) => write!(f, "Server did not send attribute \"{field}\""),
+            Self::FailedToParseField(field, error) => write!(f, "Failed to parse attribute \"{field}\": {error}"),
+            Self::TooManyValues(field) => write!(f, "more than one value in attribute \"{field}\""),
         }
     }
 }
 
 #[cfg(feature = "from_octets")]
+/// Octet string parsing logic for single value
+///
+/// This is the default trait to implement to work for the derive(Entry) macro.
+/// If multiple values are present in a directory attribute, the macro will choose the first one it gets
 pub trait FromOctetString: Sized {
     type Err: Error;
     fn from_octet_string(bytes: &[u8]) -> Result<Self, Self::Err>;
@@ -256,7 +262,9 @@ pub enum SearchResultError {
     TimeLimitExceeded(Box<str>),
     SizeLimitExceeded(Box<str>),
     FilterError(Box<str>),
-    MissingField(&'static str),
+    MissingAttributeValue(&'static str),
+    /// Field was parsed as scalar but contained multiple attribute values
+    TooManyValuesInScalarField(&'static str),
     FailedToParseField(&'static str, Box<dyn Error + 'static>),
     Io(std::io::Error),
     Other {
@@ -280,8 +288,12 @@ impl Display for SearchResultError {
         match self {
             Self::Io(io) => write!(f, "io error: {io}"),
             Self::InvalidLdapMessage(_ro) => write!(f, "Server sent non-search response"),
-            Self::MissingField(field) => write!(f, "Server did not sent field \"{field}\""),
-            Self::FailedToParseField(field, err) => write!(f, "Failed to parse field \"{field}\": {err}"),
+            Self::MissingAttributeValue(field) => write!(f, "Server did not sent attribute \"{field}\""),
+            Self::TooManyValuesInScalarField(field) => write!(
+                f,
+                "Attribute \"{field}\" was parsed as single-valued but contained multiple values"
+            ),
+            Self::FailedToParseField(field, err) => write!(f, "Failed to parse attribute \"{field}\": {err}"),
             Self::MalformedLdapMessage(mal) => write!(f, "couldn't decode server response: {mal}"),
             Self::NoSuchObject(matched, no) => write!(f, "No such object: matched_dn: {matched}, message: {no}"),
             Self::InsufficientAccessRights(iar) => write!(f, "Insufficient access rights: {iar}"),
@@ -304,8 +316,9 @@ impl Display for SearchResultError {
 impl From<FailedToGetFromEntry> for SearchResultError {
     fn from(value: FailedToGetFromEntry) -> Self {
         match value {
-            FailedToGetFromEntry::MissingField(f) => Self::MissingField(f),
+            FailedToGetFromEntry::MissingField(f) => Self::MissingAttributeValue(f),
             FailedToGetFromEntry::FailedToParseField(field, err) => Self::FailedToParseField(field, err),
+            FailedToGetFromEntry::TooManyValues(field) => Self::TooManyValuesInScalarField(field),
         }
     }
 }

@@ -138,14 +138,17 @@ fn field_line(data: &AttributeField) -> TokenStream {
         }
     } else {
         quote! {
-            let #varname = <#field_type as lapdog::search::FromOctetString>::from_octet_string(
+            let #varname = <#field_type as lapdog::search::FromOctetString>::from_octet_string(match
                 entry.attributes
                     .iter()
                     .find(|x| x.r#type == #lookup_name)
                     .ok_or(lapdog::search::FailedToGetFromEntry::MissingField(#lookup_name))?
                     .values
-                    .first()
-                    .ok_or(lapdog::search::FailedToGetFromEntry::MissingField(#lookup_name))?
+                    .as_slice() {
+                    [] => {return Err(lapdog::search::FailedToGetFromEntry::MissingField(#lookup_name));},
+                    [value] => value,
+                    _ => {return Err(lapdog::search::FailedToGetFromEntry::TooManyValues(#lookup_name));}
+                }
             ).map_err(|b| lapdog::search::FailedToGetFromEntry::FailedToParseField(#lookup_name, Box::new(b)))?;
         }
     }
