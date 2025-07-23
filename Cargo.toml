@@ -4,4 +4,5 @@ members = ["lapdog", "lapdog-derive"]
 default-members = ["lapdog"]
 
 [workspace.package]
-authors = ["Niclas Klugmann <niclas@klugmann.de>"]
+license = "MIT"
+authors = ["Niclas Klugmann <klugmann@heggemann.com>"]

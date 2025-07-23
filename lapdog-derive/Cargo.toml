@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 description = "Derive macro for building lapdog search entry structs"
 authors.workspace = true
+license.workspace = true
 
 [lib]
 proc-macro = true
