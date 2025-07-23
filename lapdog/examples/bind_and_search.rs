@@ -36,6 +36,6 @@ struct UserEntry {
     #[lapdog(rename = "sAMAccountName")]
     sam_account_name: String,
     company: String,
-    #[lapdog(multiple)]
-    prop_data: Vec<String>,
+    #[lapdog(multiple, rename = "objectClass")]
+    object_class: Vec<String>,
 }
