@@ -68,47 +68,19 @@ from_octet_for_integer!(NonZeroU16);
 from_octet_for_integer!(NonZeroU32);
 from_octet_for_integer!(NonZeroU64);
 
-impl<T: FromOctetString> FromMultipleOctetStrings for Vec<T> {
+impl<T> FromMultipleOctetStrings for Vec<T>
+where
+    T: FromOctetString,
+{
     type Err = T::Err;
     fn from_multiple_octet_strings<'a>(values: impl Iterator<Item = &'a [u8]>) -> Result<Self, Self::Err> {
         values.map(T::from_octet_string).collect()
     }
 }
-impl<T: FromOctetString> FromMultipleOctetStrings for T
-where
-    T::Err: 'static,
-{
-    type Err = OrEmptyAttribute<T::Err>;
-    fn from_multiple_octet_strings<'a>(mut values: impl Iterator<Item = &'a [u8]>) -> Result<Self, Self::Err> {
-        T::from_octet_string(values.next().ok_or(OrEmptyAttribute::EmptyAttribute)?).map_err(OrEmptyAttribute::Other)
-    }
-}
-#[derive(Debug)]
-pub enum OrEmptyAttribute<T> {
-    EmptyAttribute,
-    Other(T),
-}
-// Given the dynamic nature of this, upcasting is more important than lifetimes
-impl<T> std::error::Error for OrEmptyAttribute<T>
-where
-    T: std::error::Error + 'static,
-{
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::Other(o) => Some(o),
-            Self::EmptyAttribute => None,
-        }
-    }
-}
-impl<T> std::fmt::Display for OrEmptyAttribute<T>
-where
-    T: std::error::Error,
-{
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::EmptyAttribute => write!(f, "Attribute values are empty"),
-            Self::Other(o) => write!(f, "{o}"),
-        }
+impl FromOctetString for Vec<u8> {
+    type Err = Infallible;
+    fn from_octet_string(bytes: &[u8]) -> Result<Self, Self::Err> {
+        Ok(bytes.to_vec())
     }
 }
 

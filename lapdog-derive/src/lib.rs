@@ -49,6 +49,7 @@ fn insert_object_name(field: &Field) -> TokenStream {
 
 struct AttributeField {
     attribute_name: String,
+    multiple: bool,
     field: Field,
 }
 impl AttributeField {
@@ -61,6 +62,7 @@ fn parse_fields(
 ) -> Result<(Vec<AttributeField>, Option<Field>), syn::Error> {
     let mut fields: Vec<AttributeField> = Vec::new();
     let mut object_name_field = None;
+    let mut multiple = false;
     'fields: for field in raw_fields {
         let mut replaced_attribute_name = None;
         for attr in &field.attrs {
@@ -71,8 +73,9 @@ fn parse_fields(
                         return Err(meta.error("\"object_name\" can only be declared on one field"));
                     };
                     has_set_object_name_field = true;
-                    Ok(())
-                } else if meta.path.require_ident()? == "rename" {
+                    return Ok(());
+                }
+                if meta.path.require_ident()? == "rename" {
                     let lookahead = meta.input.lookahead1();
                     if lookahead.peek(syn::Token![=]) {
                         let expr = meta
@@ -90,16 +93,17 @@ fn parse_fields(
                         }) = value
                         {
                             replaced_attribute_name = Some(lit.value());
-                            Ok(())
                         } else {
-                            Err(meta.error("rename argument must be a string literal"))
+                            return Err(meta.error("rename argument must be a string literal"));
                         }
                     } else {
-                        Err(meta.error("rename must be used like \"rename = <LDAP NAME>\""))
+                        return Err(meta.error("rename must be used like \"rename = <LDAP NAME>\""));
                     }
-                } else {
-                    Ok(())
                 }
+                if meta.path.require_ident()? == "multiple" {
+                    multiple = true;
+                }
+                Ok(())
             })?;
             if has_set_object_name_field {
                 continue 'fields;
@@ -107,7 +111,11 @@ fn parse_fields(
         }
         let attribute_name = replaced_attribute_name
             .unwrap_or_else(|| field.ident.as_ref().expect("checked as named field").to_string());
-        fields.push(AttributeField { attribute_name, field })
+        fields.push(AttributeField {
+            attribute_name,
+            multiple,
+            field,
+        })
     }
     Ok((fields, object_name_field))
 }
@@ -116,15 +124,29 @@ fn field_line(data: &AttributeField) -> TokenStream {
     let lookup_name = &data.attribute_name;
     let field_type = &data.field.ty;
     let varname = format_ident!("{}", data.ident());
-    quote! {
-        let #varname = <#field_type as lapdog::search::FromMultipleOctetStrings>::from_multiple_octet_strings(
-            entry.attributes
-                .iter()
-                .find(|x| x.r#type == #lookup_name)
-                .ok_or(lapdog::search::FailedToGetFromEntry::MissingField(#lookup_name))?
-                .values
-                .iter()
-                .map(|x| x.as_ref())
+    if data.multiple {
+        quote! {
+            let #varname = <#field_type as lapdog::search::FromMultipleOctetStrings>::from_multiple_octet_strings(
+                entry.attributes
+                    .iter()
+                    .find(|x| x.r#type == #lookup_name)
+                    .ok_or(lapdog::search::FailedToGetFromEntry::MissingField(#lookup_name))?
+                    .values
+                    .iter()
+                    .map(|x| x.as_ref())
+                ).map_err(|b| lapdog::search::FailedToGetFromEntry::FailedToParseField(#lookup_name, Box::new(b)))?;
+        }
+    } else {
+        quote! {
+            let #varname = <#field_type as lapdog::search::FromOctetString>::from_octet_string(
+                entry.attributes
+                    .iter()
+                    .find(|x| x.r#type == #lookup_name)
+                    .ok_or(lapdog::search::FailedToGetFromEntry::MissingField(#lookup_name))?
+                    .values
+                    .first()
+                    .ok_or(lapdog::search::FailedToGetFromEntry::MissingField(#lookup_name))?
             ).map_err(|b| lapdog::search::FailedToGetFromEntry::FailedToParseField(#lookup_name, Box::new(b)))?;
+        }
     }
 }

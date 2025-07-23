@@ -24,6 +24,7 @@ fn main() {
     for UserEntry {
         sam_account_name,
         company,
+        ..
     } in search_results.flatten()
     {
         println!("{sam_account_name} works for {company}");
@@ -35,4 +36,6 @@ struct UserEntry {
     #[lapdog(rename = "sAMAccountName")]
     sam_account_name: String,
     company: String,
+    #[lapdog(multiple)]
+    prop_data: Vec<String>,
 }
