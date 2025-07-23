@@ -100,13 +100,17 @@ impl Display for FailedToGetFromEntry {
 /// Octet string parsing logic for single value
 ///
 /// This is the default trait to implement to work for the derive(Entry) macro.
-/// If multiple values are present in a directory attribute, the macro will choose the first one it gets
+/// If multiple values are present in a directory attribute, the deserialization will fail
 pub trait FromOctetString: Sized {
     type Err: Error;
     fn from_octet_string(bytes: &[u8]) -> Result<Self, Self::Err>;
 }
 
 #[cfg(feature = "from_octets")]
+/// Grabs multiple values from the reference attribute.
+///
+/// If any parse in the attributes fails, it will error out. To get partial parses, wrap the inner type into a type with infallible
+/// octet string deserialization
 pub trait FromMultipleOctetStrings: Sized {
     type Err: Error;
     fn from_multiple_octet_strings<'a>(values: impl Iterator<Item = &'a [u8]>) -> Result<Self, Self::Err>;
