@@ -1,10 +1,13 @@
+use rasn_ldap::{AuthenticationChoice, BindRequest, BindResponse, LdapMessage, LdapString, ProtocolOp, ResultCode};
 use std::{
     fmt::Display,
     io::{ErrorKind, Read, Write},
     net::{TcpStream, ToSocketAddrs},
 };
 
-use rasn_ldap::{AuthenticationChoice, BindRequest, BindResponse, LdapMessage, LdapString, ProtocolOp, ResultCode};
+/// Re-exports from native-tls necessary for the compatibility methods
+#[cfg(feature = "native-tls")]
+pub mod native_tls;
 
 pub mod search;
 mod unbind;
@@ -15,24 +18,34 @@ pub struct Bound {
 pub struct Unbound {
     _priv: (),
 }
-pub struct LdapConnection<T = Unbound> {
-    tcp: TcpStream,
+
+pub struct LdapConnection<Stream, BindState = Unbound>
+where
+    Stream: Read + Write,
+{
+    stream: Stream,
     next_message_id: u32,
-    state: T,
+    state: BindState,
 }
 // Could technically be on generic T but would have to include
 // type annotations then
-impl LdapConnection<Unbound> {
-    pub fn new(addr: impl ToSocketAddrs) -> Result<LdapConnection<Unbound>, std::io::Error> {
-        let tcp = TcpStream::connect(addr)?;
-        Ok(LdapConnection {
-            tcp,
-            next_message_id: 1,
-            state: Unbound { _priv: () },
-        })
+impl LdapConnection<TcpStream, Unbound> {
+    pub fn connect(addr: impl ToSocketAddrs) -> Result<LdapConnection<TcpStream, Unbound>, std::io::Error> {
+        let stream = TcpStream::connect(addr)?;
+        Ok(LdapConnection::new_unbound(stream))
     }
 }
-impl<T> LdapConnection<T> {
+impl<Stream: Read + Write> LdapConnection<Stream, Unbound> {
+    pub fn new_unbound(stream: Stream) -> LdapConnection<Stream, Unbound> {
+        LdapConnection {
+            stream,
+            next_message_id: 1,
+            state: Unbound { _priv: () },
+        }
+    }
+}
+
+impl<Stream: Read + Write, T> LdapConnection<Stream, T> {
     fn get_and_increase_message_id(&mut self) -> u32 {
         let next = self.next_message_id;
         self.next_message_id += 1;
@@ -45,10 +58,10 @@ impl<T> LdapConnection<T> {
     ) -> Result<ProtocolOp, MessageError> {
         let message = LdapMessage::new(self.get_and_increase_message_id(), protocol_op);
         let encoded = rasn::ber::encode(&message).expect("Failed to encode BER message");
-        self.tcp.write_all(&encoded).map_err(MessageError::Io)?;
+        self.stream.write_all(&encoded).map_err(MessageError::Io)?;
         let mut buf = Vec::new();
         let mut temp_buffer = [0u8; 1024];
-        let response_msg = match self.tcp.read(&mut temp_buffer).map_err(MessageError::Io)? {
+        let response_msg = match self.stream.read(&mut temp_buffer).map_err(MessageError::Io)? {
             0 => {
                 return Err(MessageError::Io(std::io::Error::new(
                     ErrorKind::ConnectionReset,
@@ -63,9 +76,13 @@ impl<T> LdapConnection<T> {
         Ok(response_msg.protocol_op)
     }
 }
-impl LdapConnection<Unbound> {
+impl<Stream: Read + Write> LdapConnection<Stream, Unbound> {
     // Takes the connection to guarantee disconnect when the bind should fail
-    pub fn bind_simple(mut self, name: &str, password: &[u8]) -> Result<LdapConnection<Bound>, SimpleBindError> {
+    pub fn bind_simple(
+        mut self,
+        name: &str,
+        password: &[u8],
+    ) -> Result<LdapConnection<Stream, Bound>, SimpleBindError> {
         let auth = AuthenticationChoice::Simple(password.into());
         let (result_code, message, referral) =
             match self.send_single_message(ProtocolOp::BindRequest(BindRequest::new(3, name.into(), auth)), None)? {
@@ -83,7 +100,7 @@ impl LdapConnection<Unbound> {
             };
         match result_code {
             ResultCode::Success => Ok(LdapConnection {
-                tcp: self.tcp,
+                stream: self.stream,
                 next_message_id: self.next_message_id,
                 state: Bound {
                     bind_diagnostics_message: message,
@@ -106,7 +123,7 @@ impl LdapConnection<Unbound> {
         }
     }
 }
-impl LdapConnection<Bound> {
+impl<Stream: Read + Write> LdapConnection<Stream, Bound> {
     pub fn bind_diagnostics_message(&self) -> &str {
         &self.state.bind_diagnostics_message
     }

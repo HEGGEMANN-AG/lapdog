@@ -17,14 +17,17 @@ use rasn_ldap::{
 #[cfg(feature = "from_octets")]
 mod impl_traits;
 
-impl<T> LdapConnection<T> {
+impl<Stream, Bind> LdapConnection<Stream, Bind>
+where
+    Stream: Read + Write,
+{
     pub fn search<'connection, Output>(
         &'connection mut self,
         base: &str,
         scope: SearchRequestScope,
         deref_aliases: SearchRequestDerefAliases,
         filter: Filter,
-    ) -> Result<SearchResults<'connection, T, Output>, std::io::Error>
+    ) -> Result<SearchResults<'connection, Stream, Bind, Output>, std::io::Error>
     where
         Output: FromEntry,
     {
@@ -44,7 +47,7 @@ impl<T> LdapConnection<T> {
         ));
         let encoded = rasn::ber::encode(&LdapMessage::new(self.get_and_increase_message_id(), protocol))
             .expect("Failed to encode BER message");
-        self.tcp.write_all(&encoded)?;
+        self.stream.write_all(&encoded)?;
         Ok(SearchResults::new(self))
     }
 }
@@ -103,14 +106,17 @@ pub trait FromMultipleOctetStrings: Sized {
     fn from_multiple_octet_strings<'a>(values: impl Iterator<Item = &'a [u8]>) -> Result<Self, Self::Err>;
 }
 
-pub struct SearchResults<'connection, T, Output> {
-    connection: &'connection mut LdapConnection<T>,
+pub struct SearchResults<'connection, Stream, Bind, Output>
+where
+    Stream: Read + Write,
+{
+    connection: &'connection mut LdapConnection<Stream, Bind>,
     remainder: Option<Vec<u8>>,
     done: bool,
     _out: PhantomData<Output>,
 }
-impl<T, Output> SearchResults<'_, T, Output> {
-    fn new(connection: &mut LdapConnection<T>) -> SearchResults<'_, T, Output> {
+impl<Stream: Read + Write, Bind, Output> SearchResults<'_, Stream, Bind, Output> {
+    fn new(connection: &mut LdapConnection<Stream, Bind>) -> SearchResults<'_, Stream, Bind, Output> {
         SearchResults {
             connection,
             remainder: None,
@@ -120,9 +126,10 @@ impl<T, Output> SearchResults<'_, T, Output> {
     }
 }
 const TEMP_BUFFER_LENGTH: usize = 1024;
-impl<'connection, T, Output> Iterator for SearchResults<'connection, T, Output>
+impl<'connection, Stream, Bind, Output> Iterator for SearchResults<'connection, Stream, Bind, Output>
 where
     Output: FromEntry,
+    Stream: Read + Write,
 {
     type Item = Result<Output, SearchResultError>;
 
@@ -204,7 +211,7 @@ where
                     Err(e) => return Some(Err(SearchResultError::MalformedLdapMessage(e))),
                 }
             }
-            match self.connection.tcp.read(&mut temp_buffer) {
+            match self.connection.stream.read(&mut temp_buffer) {
                 Ok(0) => {
                     return Some(Err(SearchResultError::Io(std::io::Error::new(
                         ErrorKind::ConnectionReset,

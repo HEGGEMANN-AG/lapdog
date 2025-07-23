@@ -5,7 +5,7 @@ use rasn_ldap::{AttributeValueAssertion, Filter, SearchRequestDerefAliases, Sear
 
 fn main() {
     let ip: SocketAddr = std::env::var("LAPDOG_IP").unwrap().parse().unwrap();
-    let unbound = LdapConnection::new(ip).unwrap();
+    let unbound = LdapConnection::connect(ip).unwrap();
     let username = std::env::var("LAPDOG_USER").unwrap();
     let password = std::env::var("LAPDOG_PW").unwrap();
     let mut bound = unbound.bind_simple(&username, password.as_bytes()).unwrap();
