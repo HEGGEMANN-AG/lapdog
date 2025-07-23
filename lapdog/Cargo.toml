@@ -3,7 +3,7 @@ name = "lapdog"
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
-version = "0.2.1"
+version = "0.3.0"
 edition = "2024"
 description = "A safer sync LDAP library"
 documentation = "https://docs.rs/lapdog"
@@ -13,7 +13,7 @@ categories = ["authentication", "network-programming", "api-bindings"]
 [dependencies]
 rasn = "0.27.0"
 rasn-ldap = "0.27.0"
-lapdog-derive = { version = "0.1.0", optional = true, path = "../lapdog-derive" }
+lapdog-derive = { version = "0.2.0", optional = true, path = "../lapdog-derive" }
 native-tls = { version = "0.2.14", optional = true }
 
 [features]
