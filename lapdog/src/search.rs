@@ -1,4 +1,6 @@
 use std::{
+    error::Error,
+    fmt::Display,
     io::{ErrorKind, Read, Write},
     marker::PhantomData,
 };
@@ -43,11 +45,27 @@ impl<T> LdapConnection<T> {
         let encoded = rasn::ber::encode(&LdapMessage::new(self.get_and_increase_message_id(), protocol))
             .expect("Failed to encode BER message");
         self.tcp.write_all(&encoded)?;
-        Ok(SearchResults {
-            connection: self,
-            remainder: None,
-            _out: PhantomData,
-        })
+        Ok(SearchResults::new(self))
+    }
+}
+
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum SearchError {
+    Io(std::io::Error),
+}
+impl Error for SearchError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Io(io) => Some(io),
+        }
+    }
+}
+impl Display for SearchError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Io(io) => write!(f, "Failed to write to message: {io}"),
+        }
     }
 }
 
@@ -61,10 +79,10 @@ pub trait FromEntry: Sized {
 #[derive(Debug)]
 pub enum FailedToGetFromEntry {
     MissingField(&'static str),
-    FailedToParseField(&'static str, Box<dyn std::error::Error>),
+    FailedToParseField(&'static str, Box<dyn Error>),
 }
-impl std::error::Error for FailedToGetFromEntry {}
-impl std::fmt::Display for FailedToGetFromEntry {
+impl Error for FailedToGetFromEntry {}
+impl Display for FailedToGetFromEntry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::MissingField(field) => write!(f, "Server did not send field \"{field}\""),
@@ -75,20 +93,31 @@ impl std::fmt::Display for FailedToGetFromEntry {
 
 #[cfg(feature = "from_octets")]
 pub trait FromOctetString: Sized {
-    type Err: std::error::Error;
+    type Err: Error;
     fn from_octet_string(bytes: &[u8]) -> Result<Self, Self::Err>;
 }
 
 #[cfg(feature = "from_octets")]
 pub trait FromMultipleOctetStrings: Sized {
-    type Err: std::error::Error;
+    type Err: Error;
     fn from_multiple_octet_strings<'a>(values: impl Iterator<Item = &'a [u8]>) -> Result<Self, Self::Err>;
 }
 
 pub struct SearchResults<'connection, T, Output> {
     connection: &'connection mut LdapConnection<T>,
     remainder: Option<Vec<u8>>,
+    done: bool,
     _out: PhantomData<Output>,
+}
+impl<T, Output> SearchResults<'_, T, Output> {
+    fn new(connection: &mut LdapConnection<T>) -> SearchResults<'_, T, Output> {
+        SearchResults {
+            connection,
+            remainder: None,
+            done: false,
+            _out: PhantomData,
+        }
+    }
 }
 const TEMP_BUFFER_LENGTH: usize = 1024;
 impl<'connection, T, Output> Iterator for SearchResults<'connection, T, Output>
@@ -98,6 +127,9 @@ where
     type Item = Result<Output, SearchResultError>;
 
     fn next(&mut self) -> Option<Self::Item> {
+        if self.done {
+            return None;
+        }
         let mut buf = Vec::with_capacity(2048);
         let mut temp_buffer = [0u8; TEMP_BUFFER_LENGTH];
         if let Some(rem) = &self.remainder {
@@ -112,10 +144,6 @@ where
                         new_remainder.extend(remainder);
                         buf.clear();
                         match protocol_op {
-                            ProtocolOp::SearchResDone(SearchResultDone(LdapResult {
-                                result_code: ResultCode::Success,
-                                ..
-                            })) => return None,
                             ProtocolOp::SearchResEntry(SearchResultEntry {
                                 object_name: LdapString(object_name),
                                 attributes,
@@ -139,6 +167,33 @@ where
                                     attributes,
                                 };
                                 return Some(Output::from_entry(entry).map_err(Into::into));
+                            }
+                            ProtocolOp::SearchResDone(SearchResultDone(LdapResult {
+                                result_code,
+                                matched_dn,
+                                diagnostic_message,
+                                ..
+                            })) => {
+                                self.done = true;
+                                let diagnostic_message = diagnostic_message.0.into_boxed_str();
+                                let matched_dn = matched_dn.0.into_boxed_str();
+                                match result_code {
+                                    ResultCode::Success => return None,
+                                    ResultCode::NoSuchObject => {
+                                        return Some(Err(SearchResultError::NoSuchObject(
+                                            matched_dn,
+                                            diagnostic_message,
+                                        )));
+                                    }
+                                    ResultCode::OperationsError => {
+                                        return Some(Err(SearchResultError::OperationsError(diagnostic_message)));
+                                    }
+                                    result_code => Some(Err::<Output, _>(SearchResultError::Other {
+                                        result_code,
+                                        diagnostic_message,
+                                        matched_dn,
+                                    })),
+                                }
                             }
                             ProtocolOp::SearchResRef(SearchResultReference(_)) => continue,
                             po => return Some(Err(SearchResultError::InvalidLdapMessage(po))),
@@ -188,12 +243,23 @@ pub enum SearchResultError {
     MalformedLdapMessage(DecodeError),
     /// Message was not a valid search response message
     InvalidLdapMessage(ProtocolOp),
+    OperationsError(Box<str>),
+    NoSuchObject(Box<str>, Box<str>),
+    InsufficientAccessRights(Box<str>),
+    TimeLimitExceeded(Box<str>),
+    SizeLimitExceeded(Box<str>),
+    FilterError(Box<str>),
     MissingField(&'static str),
-    FailedToParseField(&'static str, Box<dyn std::error::Error + 'static>),
+    FailedToParseField(&'static str, Box<dyn Error + 'static>),
     Io(std::io::Error),
+    Other {
+        result_code: ResultCode,
+        diagnostic_message: Box<str>,
+        matched_dn: Box<str>,
+    },
 }
-impl std::error::Error for SearchResultError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+impl Error for SearchResultError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::Io(io) => Some(io),
             Self::MalformedLdapMessage(de) => Some(de),
@@ -202,7 +268,7 @@ impl std::error::Error for SearchResultError {
         }
     }
 }
-impl std::fmt::Display for SearchResultError {
+impl Display for SearchResultError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Io(io) => write!(f, "io error: {io}"),
@@ -210,6 +276,21 @@ impl std::fmt::Display for SearchResultError {
             Self::MissingField(field) => write!(f, "Server did not sent field \"{field}\""),
             Self::FailedToParseField(field, err) => write!(f, "Failed to parse field \"{field}\": {err}"),
             Self::MalformedLdapMessage(mal) => write!(f, "couldn't decode server response: {mal}"),
+            Self::NoSuchObject(matched, no) => write!(f, "No such object: matched_dn: {matched}, message: {no}"),
+            Self::InsufficientAccessRights(iar) => write!(f, "Insufficient access rights: {iar}"),
+            Self::TimeLimitExceeded(le) => write!(f, "Time limit exceeded: {le}"),
+            Self::SizeLimitExceeded(le) => write!(f, "Size limit exceeded: {le}"),
+            Self::OperationsError(oe) => write!(f, "Server operations error: {oe}"),
+            Self::FilterError(fe) => write!(f, "Filter error: {fe}"),
+            Self::Other {
+                result_code,
+                diagnostic_message,
+                matched_dn,
+            } => write!(
+                f,
+                "Miscellaneous LDAP error: code: {}, message: {diagnostic_message}, matched_dn: {matched_dn}",
+                *result_code as u32
+            ),
         }
     }
 }
