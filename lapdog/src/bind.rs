@@ -54,10 +54,10 @@ impl<Stream: Read + Write> LdapConnection<Stream, Unbound> {
         password: &[u8],
     ) -> Result<LdapConnection<Stream, BoundAuthenticated>, MaybeEmptyPassword<MaybeEmptyUsername<SimpleBindError>>>
     {
-        if name.is_empty() {
+        if password.is_empty() {
             return Err(MaybeEmptyPassword::EmptyPassword);
         }
-        if password.is_empty() {
+        if name.is_empty() {
             return Err(MaybeEmptyUsername::EmptyUsername.into());
         }
         self.bind_simple_raw(name, password, |bind_diagnostics_message| BoundAuthenticated {
