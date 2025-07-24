@@ -12,9 +12,24 @@ pub mod native_tls;
 pub mod search;
 mod unbind;
 
-pub struct Bound {
-    bind_diagnostics_message: Box<str>,
+pub trait Bound {
+    fn bind_diagnostics_message(&self) -> &str;
 }
+macro_rules! impl_for_bound {
+    ($typ:ident) => {
+        pub struct $typ {
+            bind_diagnostics_message: Box<str>,
+        }
+        impl Bound for $typ {
+            fn bind_diagnostics_message(&self) -> &str {
+                &self.bind_diagnostics_message
+            }
+        }
+    };
+}
+impl_for_bound!(BoundAnonymously);
+impl_for_bound!(BoundAuthenticated);
+impl_for_bound!(BoundUnauthenticated);
 pub struct Unbound {
     _priv: (),
 }
@@ -77,12 +92,44 @@ impl<Stream: Read + Write, T> LdapConnection<Stream, T> {
     }
 }
 impl<Stream: Read + Write> LdapConnection<Stream, Unbound> {
+    pub fn bind_simple_anonymously(self) -> Result<LdapConnection<Stream, BoundAnonymously>, SimpleBindError> {
+        self.bind_simple_raw("", &[], |bind_diagnostics_message| BoundAnonymously {
+            bind_diagnostics_message,
+        })
+    }
+    pub fn bind_simple_unauthenticated(
+        self,
+        name: &str,
+    ) -> Result<LdapConnection<Stream, BoundUnauthenticated>, SimpleBindError> {
+        if name.is_empty() {
+            return Err(SimpleBindError::EmptyName);
+        }
+        self.bind_simple_raw(name, &[], |bind_diagnostics_message| BoundUnauthenticated {
+            bind_diagnostics_message,
+        })
+    }
+    pub fn bind_simple_authenticated(
+        self,
+        name: &str,
+        password: &[u8],
+    ) -> Result<LdapConnection<Stream, BoundAuthenticated>, SimpleBindError> {
+        if name.is_empty() {
+            return Err(SimpleBindError::EmptyName);
+        }
+        if password.is_empty() {
+            return Err(SimpleBindError::EmptyPassword);
+        }
+        self.bind_simple_raw(name, password, |bind_diagnostics_message| BoundAuthenticated {
+            bind_diagnostics_message,
+        })
+    }
     // Takes the connection to guarantee disconnect when the bind should fail
-    pub fn bind_simple(
+    fn bind_simple_raw<BindState>(
         mut self,
         name: &str,
         password: &[u8],
-    ) -> Result<LdapConnection<Stream, Bound>, SimpleBindError> {
+        bind: impl FnOnce(Box<str>) -> BindState,
+    ) -> Result<LdapConnection<Stream, BindState>, SimpleBindError> {
         let auth = AuthenticationChoice::Simple(password.into());
         let (result_code, message, referral) =
             match self.send_single_message(ProtocolOp::BindRequest(BindRequest::new(3, name.into(), auth)), None)? {
@@ -102,9 +149,7 @@ impl<Stream: Read + Write> LdapConnection<Stream, Unbound> {
             ResultCode::Success => Ok(LdapConnection {
                 stream: self.stream,
                 next_message_id: self.next_message_id,
-                state: Bound {
-                    bind_diagnostics_message: message,
-                },
+                state: bind(message),
             }),
             ResultCode::Referral => match referral {
                 Some(referrals) => Err(SimpleBindError::Referral { referrals, message }),
@@ -123,9 +168,9 @@ impl<Stream: Read + Write> LdapConnection<Stream, Unbound> {
         }
     }
 }
-impl<Stream: Read + Write> LdapConnection<Stream, Bound> {
+impl<Stream: Read + Write, B: Bound> LdapConnection<Stream, B> {
     pub fn bind_diagnostics_message(&self) -> &str {
-        &self.state.bind_diagnostics_message
+        self.state.bind_diagnostics_message()
     }
 }
 
@@ -162,6 +207,8 @@ impl From<MessageError> for SimpleBindError {
 
 #[derive(Debug)]
 pub enum SimpleBindError {
+    EmptyName,
+    EmptyPassword,
     /// IO error for writing to the raw TCP stream.
     IoError(std::io::Error),
     /// The Server sent a "referral" response without a target
@@ -198,6 +245,8 @@ impl std::error::Error for SimpleBindError {
 impl Display for SimpleBindError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::EmptyName => write!(f, "Name cannot be empty on an non-anonymous bind"),
+            Self::EmptyPassword => write!(f, "Password cannot be empty on an authenticated bind"),
             Self::MalformedResponse => write!(f, "Server sent invalid response"),
             Self::MalformedResponseIncludedSasl => write!(f, "Server sent SASL response credentials"),
             Self::OperationsError(op) => write!(f, "Server operations error: {op}"),

@@ -8,7 +8,9 @@ fn main() {
     let unbound = LdapConnection::connect(ip).unwrap();
     let username = std::env::var("LAPDOG_USER").unwrap();
     let password = std::env::var("LAPDOG_PW").unwrap();
-    let mut bound = unbound.bind_simple(&username, password.as_bytes()).unwrap();
+    let mut bound = unbound
+        .bind_simple_authenticated(&username, password.as_bytes())
+        .unwrap();
     let search_filter = Filter::Not(Box::new(Filter::EqualityMatch(AttributeValueAssertion::new(
         "givenName".into(),
         b"Steve".to_vec().into(),
