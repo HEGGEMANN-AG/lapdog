@@ -75,6 +75,7 @@ impl Display for SearchError {
 pub trait FromEntry: Sized {
     fn from_entry(entry: RawEntry) -> Result<Self, FailedToGetFromEntry>;
 
+    #[must_use]
     fn attributes() -> Option<impl Iterator<Item = &'static str>> {
         None::<std::iter::Empty<&str>>
     }
@@ -136,7 +137,7 @@ impl<Stream: Read + Write, Bind, Output> SearchResults<'_, Stream, Bind, Output>
     }
 }
 const TEMP_BUFFER_LENGTH: usize = 1024;
-impl<'connection, Stream, Bind, Output> Iterator for SearchResults<'connection, Stream, Bind, Output>
+impl<Stream, Bind, Output> Iterator for SearchResults<'_, Stream, Bind, Output>
 where
     Output: FromEntry,
     Stream: Read + Write,
