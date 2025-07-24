@@ -85,64 +85,60 @@ impl Display for SimpleBindError {
 }
 
 #[derive(Debug)]
-pub enum MaybeEmptyUsername<E> {
+pub enum AuthenticatedBindError {
     EmptyUsername,
-    Other(E),
-}
-impl<E: Error + 'static> Error for MaybeEmptyUsername<E> {
-    fn source(&self) -> Option<&(dyn Error + 'static)> {
-        if let Self::Other(o) = self { Some(o) } else { None }
-    }
-}
-impl<E: Display> Display for MaybeEmptyUsername<E> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Other(o) => write!(f, "{o}"),
-            Self::EmptyUsername => write!(f, "Name cannot be empty on an non-anonymous bind"),
-        }
-    }
-}
-impl<E> From<E> for MaybeEmptyUsername<E> {
-    fn from(value: E) -> Self {
-        MaybeEmptyUsername::Other(value)
-    }
-}
-impl<E> MaybeEmptyUsername<E> {
-    pub fn into_inner(self) -> Option<E> {
-        match self {
-            Self::Other(o) => Some(o),
-            Self::EmptyUsername => None,
-        }
-    }
-}
-#[derive(Debug)]
-pub enum MaybeEmptyPassword<E> {
     EmptyPassword,
-    Other(E),
+    Bind(SimpleBindError),
 }
-impl<E: Error + 'static> Error for MaybeEmptyPassword<E> {
+impl Error for AuthenticatedBindError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
-        if let Self::Other(o) = self { Some(o) } else { None }
+        if let AuthenticatedBindError::Bind(b) = self {
+            Some(b)
+        } else {
+            None
+        }
     }
 }
-impl<E: Display> Display for MaybeEmptyPassword<E> {
+impl Display for AuthenticatedBindError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Other(o) => write!(f, "{o}"),
             Self::EmptyPassword => write!(f, "Password cannot be empty on an authenticated bind"),
+            Self::EmptyUsername => write!(f, "Name cannot be empty on an non-anonymous bind"),
+            Self::Bind(b) => write!(f, "{b}"),
         }
     }
 }
-impl<E> From<E> for MaybeEmptyPassword<E> {
-    fn from(value: E) -> Self {
-        MaybeEmptyPassword::Other(value)
+
+#[derive(Debug)]
+pub enum UnauthenticatedBindError {
+    EmptyUsername,
+    Bind(SimpleBindError),
+}
+impl Error for UnauthenticatedBindError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        if let UnauthenticatedBindError::Bind(b) = self {
+            Some(b)
+        } else {
+            None
+        }
     }
 }
-impl<E> MaybeEmptyPassword<E> {
-    pub fn into_inner(self) -> Option<E> {
+impl Display for UnauthenticatedBindError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Other(o) => Some(o),
-            Self::EmptyPassword => None,
+            Self::EmptyUsername => write!(f, "Name cannot be empty on an non-anonymous bind"),
+            Self::Bind(b) => write!(f, "{b}"),
         }
     }
 }
+macro_rules! into_simple_bind_error {
+    ($typ:ty) => {
+        impl $typ {
+            pub fn into_simple_bind_error(self) -> Option<SimpleBindError> {
+                if let Self::Bind(b) = self { Some(b) } else { None }
+            }
+        }
+    };
+}
+into_simple_bind_error!(UnauthenticatedBindError);
+into_simple_bind_error!(AuthenticatedBindError);

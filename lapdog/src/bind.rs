@@ -5,7 +5,7 @@ use rasn_ldap::{AuthenticationChoice, BindRequest, BindResponse, LdapString, Pro
 use crate::LdapConnection;
 
 pub mod error;
-pub use error::{MaybeEmptyPassword, MaybeEmptyUsername, SimpleBindError};
+pub use error::{AuthenticatedBindError, SimpleBindError, UnauthenticatedBindError};
 
 pub trait Bound {
     fn bind_diagnostics_message(&self) -> &str;
@@ -47,15 +47,14 @@ impl<Stream: Read + Write> LdapConnection<Stream, Unbound> {
     pub fn bind_simple_unauthenticated(
         self,
         name: &str,
-    ) -> Result<LdapConnection<Stream, BoundUnauthenticated>, MaybeEmptyUsername<SimpleBindError>> {
+    ) -> Result<LdapConnection<Stream, BoundUnauthenticated>, UnauthenticatedBindError> {
         if name.is_empty() {
-            return Err(MaybeEmptyUsername::EmptyUsername);
+            return Err(UnauthenticatedBindError::EmptyUsername);
         }
-        Ok(
-            self.bind_simple_raw(name, &[], |bind_diagnostics_message| BoundUnauthenticated {
-                bind_diagnostics_message,
-            })?,
-        )
+        self.bind_simple_raw(name, &[], |bind_diagnostics_message| BoundUnauthenticated {
+            bind_diagnostics_message,
+        })
+        .map_err(UnauthenticatedBindError::Bind)
     }
     /// Binds the connection with simple auth
     ///
@@ -64,20 +63,22 @@ impl<Stream: Read + Write> LdapConnection<Stream, Unbound> {
         self,
         name: &str,
         password: &[u8],
-    ) -> Result<LdapConnection<Stream, BoundAuthenticated>, MaybeEmptyPassword<MaybeEmptyUsername<SimpleBindError>>>
-    {
+    ) -> Result<LdapConnection<Stream, BoundAuthenticated>, AuthenticatedBindError> {
         if password.is_empty() {
-            return Err(MaybeEmptyPassword::EmptyPassword);
+            return Err(AuthenticatedBindError::EmptyPassword);
         }
         if name.is_empty() {
-            return Err(MaybeEmptyUsername::EmptyUsername.into());
+            return Err(AuthenticatedBindError::EmptyUsername);
         }
         self.bind_simple_raw(name, password, |bind_diagnostics_message| BoundAuthenticated {
             bind_diagnostics_message,
         })
-        .map_err(|e| MaybeEmptyPassword::Other(MaybeEmptyUsername::Other(e)))
+        .map_err(AuthenticatedBindError::Bind)
     }
-    // Takes the connection to guarantee disconnect when the bind should fail
+    /// Internal method with name and password
+    ///
+    /// Not exposed externally due to different behaviour depending on bind.
+    /// Takes the connection to guarantee disconnect when the bind should fail.
     fn bind_simple_raw<BindState>(
         mut self,
         name: &str,
