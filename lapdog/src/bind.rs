@@ -37,8 +37,7 @@ pub struct Unbound {
 /// This is just an inconvenience to make the user think about whether a stream is using TLS
 /// or another encryption mechanism
 pub unsafe trait Safe {}
-#[cfg(feature = "native-tls")]
-unsafe impl<T> Safe for native_tls::TlsStream<T> {}
+
 impl<Stream: Read + Write + Safe, OldBindState> LdapConnection<Stream, OldBindState> {
     /// Binds the connection anonymously, aka without a password or username
     ///
@@ -193,6 +192,29 @@ impl<Stream: Read + Write, OldBindState> LdapConnection<Stream, OldBindState> {
             ResultCode::ConfidentialityRequired => Err(SimpleBindError::ConfidentialityRequired(message)),
             ResultCode::InappropriateAuthentication => Err(SimpleBindError::InappropriateAuthentication(message)),
             other => Err(SimpleBindError::Other(other as u32, message)),
+        }
+    }
+}
+
+#[cfg(feature = "native-tls")]
+mod native_tls {
+    use rasn_ldap::{AuthenticationChoice, BindRequest, ProtocolOp, SaslCredentials};
+
+    use crate::LdapConnection;
+
+    unsafe impl<T> super::Safe for native_tls::TlsStream<T> {}
+    pub struct BoundNativeTls;
+
+    impl<Stream: std::io::Read + std::io::Write, BindState> LdapConnection<native_tls::TlsStream<Stream>, BindState> {
+        pub fn sasl_external_bind(
+            mut self,
+            auth_z_id: &str,
+        ) -> LdapConnection<native_tls::TlsStream<Stream>, BoundNativeTls> {
+            let auth = AuthenticationChoice::Sasl(SaslCredentials::new("EXTERNAL".into(), None));
+            let message = ProtocolOp::BindRequest(BindRequest::new(3, auth_z_id.into(), auth));
+            let response = self.send_single_message(message, None).unwrap();
+            dbg!(response);
+            todo!()
         }
     }
 }
