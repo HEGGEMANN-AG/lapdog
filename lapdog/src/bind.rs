@@ -13,20 +13,22 @@ pub trait Bound {
 }
 
 macro_rules! impl_for_bound {
-    ($typ:ident) => {
-        pub struct $typ {
-            bind_diagnostics_message: Box<str>,
-        }
-        impl Bound for $typ {
-            fn get_bind_diagnostics_message(&self) -> &str {
-                &self.bind_diagnostics_message
+    ([$($typ:ident),*]) => {
+        $(
+            /// Typestate of the last successful bind operation on this connection
+            pub struct $typ {
+                bind_diagnostics_message: Box<str>,
             }
-        }
+            impl Bound for $typ {
+                fn get_bind_diagnostics_message(&self) -> &str {
+                    &self.bind_diagnostics_message
+                }
+            }
+        )*
     };
 }
-impl_for_bound!(BoundAnonymously);
-impl_for_bound!(BoundAuthenticated);
-impl_for_bound!(BoundUnauthenticated);
+impl_for_bound!([BoundAnonymously, BoundAuthenticated, BoundUnauthenticated]);
+/// No bind operation has been done on this connection
 pub struct Unbound {
     pub(crate) _priv: (),
 }
