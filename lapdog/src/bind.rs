@@ -7,9 +7,11 @@ use crate::LdapConnection;
 pub mod error;
 pub use error::{AuthenticatedBindError, SimpleBindError, UnauthenticatedBindError};
 
+/// Allows extraction of the last diagnostics message in a successful bind operation
 pub trait Bound {
     fn get_bind_diagnostics_message(&self) -> &str;
 }
+
 macro_rules! impl_for_bound {
     ($typ:ident) => {
         pub struct $typ {
