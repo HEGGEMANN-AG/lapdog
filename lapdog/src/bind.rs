@@ -29,12 +29,21 @@ pub struct Unbound {
     pub(crate) _priv: (),
 }
 
+// The LDAP standard recommends to implement these different types of bind explicitly, so I'm doing it this way
 impl<Stream: Read + Write> LdapConnection<Stream, Unbound> {
+    /// Binds the connection anonymously, aka without a password or username
+    ///
+    /// For most servers, this leads to limited privileges
     pub fn bind_simple_anonymously(self) -> Result<LdapConnection<Stream, BoundAnonymously>, SimpleBindError> {
         self.bind_simple_raw("", &[], |bind_diagnostics_message| BoundAnonymously {
             bind_diagnostics_message,
         })
     }
+    /// Binds the connection in the unauthenticated mode.
+    ///
+    /// Default is for servers to reject this, but some may implement privileges for these kinds of connections
+    ///
+    /// An empty username is invalid, use `bind_simple_anonymously` instead
     pub fn bind_simple_unauthenticated(
         self,
         name: &str,
@@ -48,6 +57,9 @@ impl<Stream: Read + Write> LdapConnection<Stream, Unbound> {
             })?,
         )
     }
+    /// Binds the connection with simple auth
+    ///
+    /// An empty username or password is invalid, use `bind_simple_anonymously` or `bind_simple_unauthenticated` instead
     pub fn bind_simple_authenticated(
         self,
         name: &str,
