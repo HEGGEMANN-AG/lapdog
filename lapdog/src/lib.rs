@@ -32,6 +32,10 @@ impl LdapConnection<TcpStream, Unbound> {
     }
 }
 impl<Stream: Read + Write> LdapConnection<Stream, Unbound> {
+    /// Start an LDAP connection over a custom stream.
+    ///
+    /// If `Stream` is safe for transmitting passwords in cleartext, e.g. because it's not interceptable
+    /// or encrypted, the `Safe` trait will enable safe binding operations
     pub fn new_unbound(stream: Stream) -> LdapConnection<Stream, Unbound> {
         LdapConnection {
             stream,
