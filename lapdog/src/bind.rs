@@ -8,7 +8,7 @@ pub mod error;
 pub use error::{AuthenticatedBindError, SimpleBindError, UnauthenticatedBindError};
 
 pub trait Bound {
-    fn bind_diagnostics_message(&self) -> &str;
+    fn get_bind_diagnostics_message(&self) -> &str;
 }
 macro_rules! impl_for_bound {
     ($typ:ident) => {
@@ -16,7 +16,7 @@ macro_rules! impl_for_bound {
             bind_diagnostics_message: Box<str>,
         }
         impl Bound for $typ {
-            fn bind_diagnostics_message(&self) -> &str {
+            fn get_bind_diagnostics_message(&self) -> &str {
                 &self.bind_diagnostics_message
             }
         }
@@ -30,7 +30,7 @@ pub struct Unbound {
 }
 
 // The LDAP standard recommends to implement these different types of bind explicitly, so I'm doing it this way
-impl<Stream: Read + Write> LdapConnection<Stream, Unbound> {
+impl<Stream: Read + Write, OldBindState> LdapConnection<Stream, OldBindState> {
     /// Binds the connection anonymously, aka without a password or username
     ///
     /// For most servers, this leads to limited privileges
@@ -123,8 +123,9 @@ impl<Stream: Read + Write> LdapConnection<Stream, Unbound> {
         }
     }
 }
+
 impl<Stream: Read + Write, B: Bound> LdapConnection<Stream, B> {
-    pub fn bind_diagnostics_message(&self) -> &str {
-        self.state.bind_diagnostics_message()
+    pub fn get_bind_diagnostics_message(&self) -> &str {
+        self.state.get_bind_diagnostics_message()
     }
 }
