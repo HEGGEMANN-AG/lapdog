@@ -1,38 +1,19 @@
-use rasn_ldap::{AuthenticationChoice, BindRequest, BindResponse, LdapMessage, LdapString, ProtocolOp, ResultCode};
+use rasn_ldap::{LdapMessage, ProtocolOp};
 use std::{
     fmt::Display,
     io::{ErrorKind, Read, Write},
     net::{TcpStream, ToSocketAddrs},
 };
 
+use crate::bind::Unbound;
+
 /// Re-exports from native-tls necessary for the compatibility methods
 #[cfg(feature = "native-tls")]
 pub mod native_tls;
 
+pub mod bind;
 pub mod search;
 mod unbind;
-
-pub trait Bound {
-    fn bind_diagnostics_message(&self) -> &str;
-}
-macro_rules! impl_for_bound {
-    ($typ:ident) => {
-        pub struct $typ {
-            bind_diagnostics_message: Box<str>,
-        }
-        impl Bound for $typ {
-            fn bind_diagnostics_message(&self) -> &str {
-                &self.bind_diagnostics_message
-            }
-        }
-    };
-}
-impl_for_bound!(BoundAnonymously);
-impl_for_bound!(BoundAuthenticated);
-impl_for_bound!(BoundUnauthenticated);
-pub struct Unbound {
-    _priv: (),
-}
 
 pub struct LdapConnection<Stream, BindState = Unbound>
 where
@@ -91,88 +72,6 @@ impl<Stream: Read + Write, T> LdapConnection<Stream, T> {
         Ok(response_msg.protocol_op)
     }
 }
-impl<Stream: Read + Write> LdapConnection<Stream, Unbound> {
-    pub fn bind_simple_anonymously(self) -> Result<LdapConnection<Stream, BoundAnonymously>, SimpleBindError> {
-        self.bind_simple_raw("", &[], |bind_diagnostics_message| BoundAnonymously {
-            bind_diagnostics_message,
-        })
-    }
-    pub fn bind_simple_unauthenticated(
-        self,
-        name: &str,
-    ) -> Result<LdapConnection<Stream, BoundUnauthenticated>, SimpleBindError> {
-        if name.is_empty() {
-            return Err(SimpleBindError::EmptyName);
-        }
-        self.bind_simple_raw(name, &[], |bind_diagnostics_message| BoundUnauthenticated {
-            bind_diagnostics_message,
-        })
-    }
-    pub fn bind_simple_authenticated(
-        self,
-        name: &str,
-        password: &[u8],
-    ) -> Result<LdapConnection<Stream, BoundAuthenticated>, SimpleBindError> {
-        if name.is_empty() {
-            return Err(SimpleBindError::EmptyName);
-        }
-        if password.is_empty() {
-            return Err(SimpleBindError::EmptyPassword);
-        }
-        self.bind_simple_raw(name, password, |bind_diagnostics_message| BoundAuthenticated {
-            bind_diagnostics_message,
-        })
-    }
-    // Takes the connection to guarantee disconnect when the bind should fail
-    fn bind_simple_raw<BindState>(
-        mut self,
-        name: &str,
-        password: &[u8],
-        bind: impl FnOnce(Box<str>) -> BindState,
-    ) -> Result<LdapConnection<Stream, BindState>, SimpleBindError> {
-        let auth = AuthenticationChoice::Simple(password.into());
-        let (result_code, message, referral) =
-            match self.send_single_message(ProtocolOp::BindRequest(BindRequest::new(3, name.into(), auth)), None)? {
-                ProtocolOp::BindResponse(BindResponse {
-                    server_sasl_creds: Some(_),
-                    ..
-                }) => return Err(SimpleBindError::MalformedResponseIncludedSasl),
-                ProtocolOp::BindResponse(BindResponse {
-                    result_code,
-                    diagnostic_message: LdapString(s),
-                    referral,
-                    ..
-                }) => (result_code, s.into_boxed_str(), referral),
-                _ => return Err(SimpleBindError::MalformedResponse),
-            };
-        match result_code {
-            ResultCode::Success => Ok(LdapConnection {
-                stream: self.stream,
-                next_message_id: self.next_message_id,
-                state: bind(message),
-            }),
-            ResultCode::Referral => match referral {
-                Some(referrals) => Err(SimpleBindError::Referral { referrals, message }),
-                None => Err(SimpleBindError::ReferralWithoutTarget(message)),
-            },
-            ResultCode::ProtocolError => Err(SimpleBindError::ProtocolError(message)),
-            ResultCode::InvalidCredentials => Err(SimpleBindError::InvalidCredentials(message)),
-            ResultCode::OperationsError => Err(SimpleBindError::OperationsError(message)),
-            ResultCode::Busy | ResultCode::Unavailable => {
-                Err(SimpleBindError::ServerUnavailabe(result_code as u32, message))
-            }
-            ResultCode::InvalidDnSyntax => Err(SimpleBindError::InvalidDn(message)),
-            ResultCode::ConfidentialityRequired => Err(SimpleBindError::ConfidentialityRequired(message)),
-            ResultCode::InappropriateAuthentication => Err(SimpleBindError::InappropriateAuthentication(message)),
-            other => Err(SimpleBindError::Other(other as u32, message)),
-        }
-    }
-}
-impl<Stream: Read + Write, B: Bound> LdapConnection<Stream, B> {
-    pub fn bind_diagnostics_message(&self) -> &str {
-        self.state.bind_diagnostics_message()
-    }
-}
 
 #[derive(Debug)]
 enum MessageError {
@@ -193,84 +92,6 @@ impl Display for MessageError {
         match self {
             Self::Io(io) => write!(f, "io: {io}"),
             Self::Message(m) => write!(f, "message: {m}"),
-        }
-    }
-}
-impl From<MessageError> for SimpleBindError {
-    fn from(value: MessageError) -> Self {
-        match value {
-            MessageError::Io(io) => SimpleBindError::IoError(io),
-            MessageError::Message(_) => SimpleBindError::MalformedResponse,
-        }
-    }
-}
-
-#[derive(Debug)]
-pub enum SimpleBindError {
-    EmptyName,
-    EmptyPassword,
-    /// IO error for writing to the raw TCP stream.
-    IoError(std::io::Error),
-    /// The Server sent a "referral" response without a target
-    ReferralWithoutTarget(Box<str>),
-    ProtocolError(Box<str>),
-    /// Server sent non-BER message or (incorrectly) included Sasl credits
-    MalformedResponse,
-    MalformedResponseIncludedSasl,
-    Referral {
-        referrals: Vec<LdapString>,
-        message: Box<str>,
-    },
-    OperationsError(Box<str>),
-    ServerUnavailabe(u32, Box<str>),
-    InvalidCredentials(Box<str>),
-    InvalidDn(Box<str>),
-    ConfidentialityRequired(Box<str>),
-    InappropriateAuthentication(Box<str>),
-    Other(u32, Box<str>),
-}
-impl From<std::io::Error> for SimpleBindError {
-    fn from(value: std::io::Error) -> Self {
-        Self::IoError(value)
-    }
-}
-impl std::error::Error for SimpleBindError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::IoError(io) => Some(io),
-            _ => None,
-        }
-    }
-}
-impl Display for SimpleBindError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::EmptyName => write!(f, "Name cannot be empty on an non-anonymous bind"),
-            Self::EmptyPassword => write!(f, "Password cannot be empty on an authenticated bind"),
-            Self::MalformedResponse => write!(f, "Server sent invalid response"),
-            Self::MalformedResponseIncludedSasl => write!(f, "Server sent SASL response credentials"),
-            Self::OperationsError(op) => write!(f, "Server operations error: {op}"),
-            Self::InvalidDn(message) => write!(f, "Invalid DN: {message}"),
-            Self::ConfidentialityRequired(message) => write!(f, "Operation requires confidentiality: {message}"),
-            Self::InappropriateAuthentication(message) => write!(f, "Inappropriate authentication: {message}"),
-            Self::ServerUnavailabe(code, message) => write!(f, "Server is unavailable (code {code}: {message}"),
-            Self::InvalidCredentials(message) => write!(f, "Invalid credentials: {message}"),
-            Self::Other(code, message) => write!(f, "bind error: code: {code}, message: \"{message}\""),
-            Self::IoError(io) => write!(f, "Io Error: {io}"),
-            Self::ReferralWithoutTarget(message) => {
-                write!(f, "Server sent referral without target information: {message}")
-            }
-            Self::Referral { referrals, message } => {
-                write!(f, "Server sent referrals: {referrals:?}")?;
-                if !message.is_empty() {
-                    write!(f, ", {message}")
-                } else {
-                    Ok(())
-                }
-            }
-            Self::ProtocolError(message) => {
-                write!(f, "Protocol version 3 is not supported by the server: {message}")
-            }
         }
     }
 }
