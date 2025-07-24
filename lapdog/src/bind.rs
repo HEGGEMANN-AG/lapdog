@@ -1,4 +1,7 @@
-use std::io::{Read, Write};
+use std::{
+    io::{Read, Write},
+    net::TcpStream,
+};
 
 use rasn_ldap::{AuthenticationChoice, BindRequest, BindResponse, LdapString, ProtocolOp, ResultCode};
 
@@ -32,16 +35,19 @@ impl_for_bound!([BoundAnonymously, BoundAuthenticated, BoundUnauthenticated]);
 pub struct Unbound {
     pub(crate) _priv: (),
 }
-
-// The LDAP standard recommends to implement these different types of bind explicitly, so I'm doing it this way
-impl<Stream: Read + Write, OldBindState> LdapConnection<Stream, OldBindState> {
+/// Marker trait for encrypted streams
+/// # Safety
+/// This is just an inconvenience to make the user think about whether a stream is using TLS
+/// or another encryption mechanism
+pub unsafe trait Safe {}
+#[cfg(feature = "native-tls")]
+unsafe impl<T> Safe for native_tls::TlsStream<T> {}
+impl<Stream: Read + Write + Safe, OldBindState> LdapConnection<Stream, OldBindState> {
     /// Binds the connection anonymously, aka without a password or username
     ///
     /// For most servers, this leads to limited privileges
     pub fn bind_simple_anonymously(self) -> Result<LdapConnection<Stream, BoundAnonymously>, SimpleBindError> {
-        self.bind_simple_raw("", &[], |bind_diagnostics_message| BoundAnonymously {
-            bind_diagnostics_message,
-        })
+        self.inner_bind_simple_anonymously()
     }
     /// Binds the connection in the unauthenticated mode.
     ///
@@ -49,6 +55,68 @@ impl<Stream: Read + Write, OldBindState> LdapConnection<Stream, OldBindState> {
     ///
     /// An empty username is invalid, use `bind_simple_anonymously` instead
     pub fn bind_simple_unauthenticated(
+        self,
+        name: &str,
+    ) -> Result<LdapConnection<Stream, BoundUnauthenticated>, UnauthenticatedBindError> {
+        self.inner_bind_simple_unauthenticated(name)
+    }
+    /// Binds the connection with simple auth
+    ///
+    /// An empty username or password is invalid, use `bind_simple_anonymously` or `bind_simple_unauthenticated` instead
+    pub fn bind_simple_authenticated(
+        self,
+        name: &str,
+        password: &[u8],
+    ) -> Result<LdapConnection<Stream, BoundAuthenticated>, AuthenticatedBindError> {
+        self.inner_bind_simple_authenticated(name, password)
+    }
+}
+impl<OldBindState> LdapConnection<TcpStream, OldBindState> {
+    /// Binds the connection anonymously, aka without a password or username
+    ///
+    /// For most servers, this leads to limited privileges
+    ///
+    /// If you call this, you didn't add TLS to this connection and your password will be sent in cleartext over the network
+    pub fn unsafe_bind_simple_anonymously(
+        self,
+    ) -> Result<LdapConnection<TcpStream, BoundAnonymously>, SimpleBindError> {
+        self.inner_bind_simple_anonymously()
+    }
+    /// Binds the connection in the unauthenticated mode.
+    ///
+    /// Default is for servers to reject this, but some may implement privileges for these kinds of connections
+    ///
+    /// An empty username is invalid, use `bind_simple_anonymously` instead.
+    ///
+    /// If you call this, you didn't add TLS to this connection and your password will be sent in cleartext over the network
+    pub fn unsafe_bind_simple_unauthenticated(
+        self,
+        name: &str,
+    ) -> Result<LdapConnection<TcpStream, BoundUnauthenticated>, UnauthenticatedBindError> {
+        self.inner_bind_simple_unauthenticated(name)
+    }
+    /// Binds the connection with simple auth
+    ///
+    /// An empty username or password is invalid, use `bind_simple_anonymously` or `bind_simple_unauthenticated` instead
+    ///
+    /// If you call this, you didn't add TLS to this connection and your password will be sent in cleartext over the network
+    pub fn unsafe_bind_simple_authenticated(
+        self,
+        name: &str,
+        password: &[u8],
+    ) -> Result<LdapConnection<TcpStream, BoundAuthenticated>, AuthenticatedBindError> {
+        self.inner_bind_simple_authenticated(name, password)
+    }
+}
+
+// The LDAP standard recommends to implement these different types of bind explicitly, so I'm doing it this way
+impl<Stream: Read + Write, OldBindState> LdapConnection<Stream, OldBindState> {
+    fn inner_bind_simple_anonymously(self) -> Result<LdapConnection<Stream, BoundAnonymously>, SimpleBindError> {
+        self.bind_simple_raw("", &[], |bind_diagnostics_message| BoundAnonymously {
+            bind_diagnostics_message,
+        })
+    }
+    fn inner_bind_simple_unauthenticated(
         self,
         name: &str,
     ) -> Result<LdapConnection<Stream, BoundUnauthenticated>, UnauthenticatedBindError> {
@@ -60,10 +128,7 @@ impl<Stream: Read + Write, OldBindState> LdapConnection<Stream, OldBindState> {
         })
         .map_err(UnauthenticatedBindError::Bind)
     }
-    /// Binds the connection with simple auth
-    ///
-    /// An empty username or password is invalid, use `bind_simple_anonymously` or `bind_simple_unauthenticated` instead
-    pub fn bind_simple_authenticated(
+    fn inner_bind_simple_authenticated(
         self,
         name: &str,
         password: &[u8],

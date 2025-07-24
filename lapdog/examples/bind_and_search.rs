@@ -9,7 +9,7 @@ fn main() {
     let username = std::env::var("LAPDOG_USER").unwrap();
     let password = std::env::var("LAPDOG_PW").unwrap();
     let mut bound = unbound
-        .bind_simple_authenticated(&username, password.as_bytes())
+        .unsafe_bind_simple_authenticated(&username, password.as_bytes())
         .unwrap();
     let search_filter = Filter::Not(Box::new(Filter::EqualityMatch(AttributeValueAssertion::new(
         "givenName".into(),
