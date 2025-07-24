@@ -1,5 +1,6 @@
 use std::{error::Error, fmt::Display};
 
+use rasn::error::DecodeError;
 use rasn_ldap::LdapString;
 
 use crate::MessageError;
@@ -8,7 +9,7 @@ impl From<MessageError> for SimpleBindError {
     fn from(value: MessageError) -> Self {
         match value {
             MessageError::Io(io) => SimpleBindError::IoError(io),
-            MessageError::Message(_) => SimpleBindError::MalformedResponse,
+            MessageError::Message(m) => SimpleBindError::MalformedResponse(m),
         }
     }
 }
@@ -20,8 +21,10 @@ pub enum SimpleBindError {
     /// The Server sent a "referral" response without a target
     ReferralWithoutTarget(Box<str>),
     ProtocolError(Box<str>),
-    /// Server sent non-BER message or (incorrectly) included Sasl credits
-    MalformedResponse,
+    MalformedResponseNotBindResponse,
+    /// Server sent non-BER message
+    MalformedResponse(DecodeError),
+    /// Server send SASL creds for a non-sasl method
     MalformedResponseIncludedSasl,
     Referral {
         referrals: Vec<LdapString>,
@@ -44,6 +47,7 @@ impl std::error::Error for SimpleBindError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::IoError(io) => Some(io),
+            Self::MalformedResponse(m) => Some(m),
             _ => None,
         }
     }
@@ -51,7 +55,8 @@ impl std::error::Error for SimpleBindError {
 impl Display for SimpleBindError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::MalformedResponse => write!(f, "Server sent invalid response"),
+            Self::MalformedResponseNotBindResponse => write!(f, "Server sent non-bind response message"),
+            Self::MalformedResponse(message) => write!(f, "Server sent invalid response: {message}"),
             Self::MalformedResponseIncludedSasl => write!(f, "Server sent SASL response credentials"),
             Self::OperationsError(op) => write!(f, "Server operations error: {op}"),
             Self::InvalidDn(message) => write!(f, "Invalid DN: {message}"),

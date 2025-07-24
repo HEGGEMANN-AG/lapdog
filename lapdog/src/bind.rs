@@ -85,7 +85,7 @@ impl<Stream: Read + Write> LdapConnection<Stream, Unbound> {
                     referral,
                     ..
                 }) => (result_code, s.into_boxed_str(), referral),
-                _ => return Err(SimpleBindError::MalformedResponse),
+                _ => return Err(SimpleBindError::MalformedResponseNotBindResponse),
             };
         match result_code {
             ResultCode::Success => Ok(LdapConnection {
