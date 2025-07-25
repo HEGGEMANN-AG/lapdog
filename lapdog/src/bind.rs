@@ -6,6 +6,8 @@ use crate::LdapConnection;
 
 pub mod error;
 pub use error::{AuthenticatedBindError, SimpleBindError, UnauthenticatedBindError};
+#[cfg(feature = "kerberos")]
+pub mod kerberos;
 #[cfg(feature = "native-tls")]
 pub mod native_tls;
 
@@ -16,21 +18,24 @@ pub trait Bound {
 macro_rules! impl_bound {
     ([$($typ:ident),*]) => {
         $(
-            /// Typestate of the last successful bind operation on this connection
-            pub struct $typ {
-                bind_diagnostics_message: Box<str>,
-            }
-            impl $typ {
-                fn new(bind_diagnostics_message: Box<str>) -> Self {
-                    Self { bind_diagnostics_message }
-                }
-            }
-            impl crate::bind::Bound for $typ {
-                fn get_bind_diagnostics_message(&self) -> &str {
-                    &self.bind_diagnostics_message
-                }
-            }
+            impl_bound!($typ);
         )*
+    };
+    ($typ:ident) => {
+        /// Typestate of the last successful bind operation on this connection
+        pub struct $typ {
+            bind_diagnostics_message: Box<str>,
+        }
+        impl $typ {
+            fn new(bind_diagnostics_message: Box<str>) -> Self {
+                Self { bind_diagnostics_message }
+            }
+        }
+        impl crate::bind::Bound for $typ {
+            fn get_bind_diagnostics_message(&self) -> &str {
+                &self.bind_diagnostics_message
+            }
+        }
     };
 }
 pub(crate) use impl_bound;

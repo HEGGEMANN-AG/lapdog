@@ -3,7 +3,7 @@ use rasn_ldap::{AuthenticationChoice, BindRequest, BindResponse, LdapString, Pro
 use crate::{LdapConnection, MessageError};
 
 unsafe impl<T> super::Safe for native_tls::TlsStream<T> {}
-super::impl_bound!([BoundNativeTls]);
+super::impl_bound!(BoundNativeTls);
 
 impl<Stream: std::io::Read + std::io::Write, BindState> LdapConnection<native_tls::TlsStream<Stream>, BindState> {
     pub fn sasl_external_bind(
