@@ -8,7 +8,7 @@ pub use native_tls::TlsConnector;
 use native_tls::{HandshakeError, TlsStream};
 use rasn_ldap::{ExtendedRequest, ExtendedResponse, LdapString, ProtocolOp, ResultCode};
 
-use crate::{LdapConnection, MessageError, Unbound};
+use crate::{LdapConnection, MessageError, bind::native_tls::BoundNativeTls};
 
 #[derive(Debug)]
 pub enum ConnectError {
@@ -32,7 +32,7 @@ impl std::fmt::Display for ConnectError {
     }
 }
 
-impl LdapConnection<TlsStream<TcpStream>, Unbound> {
+impl LdapConnection<TlsStream<TcpStream>, BoundNativeTls> {
     pub fn connect_native_tls(
         addr: impl ToSocketAddrs,
         domain: &str,
