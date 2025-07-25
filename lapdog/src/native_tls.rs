@@ -32,17 +32,21 @@ impl std::fmt::Display for ConnectError {
     }
 }
 
-impl LdapConnection<TlsStream<TcpStream>, BoundNativeTls> {
+impl LdapConnection<TlsStream<TcpStream>> {
     pub fn connect_native_tls(
         addr: impl ToSocketAddrs,
         domain: &str,
         tls_connector: native_tls::TlsConnector,
-    ) -> Result<LdapConnection<TlsStream<TcpStream>>, ConnectError> {
+    ) -> Result<LdapConnection<TlsStream<TcpStream>, BoundNativeTls>, ConnectError> {
         let tcp = TcpStream::connect(addr).map_err(ConnectError::Io)?;
         let tls = tls_connector
             .connect(domain, tcp)
             .map_err(|e| ConnectError::Tls(Box::new(e)))?;
-        Ok(LdapConnection::new_unbound(tls))
+        Ok(LdapConnection {
+            stream: tls,
+            next_message_id: 1,
+            state: BoundNativeTls::new(String::new().into()),
+        })
     }
 }
 impl<T, BindState> LdapConnection<T, BindState>

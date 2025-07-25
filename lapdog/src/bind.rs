@@ -27,7 +27,7 @@ macro_rules! impl_bound {
             bind_diagnostics_message: Box<str>,
         }
         impl $typ {
-            fn new(bind_diagnostics_message: Box<str>) -> Self {
+            pub(crate) fn new(bind_diagnostics_message: Box<str>) -> Self {
                 Self { bind_diagnostics_message }
             }
         }

@@ -19,9 +19,10 @@ impl<Stream: std::io::Read + std::io::Write, BindState> LdapConnection<native_tl
         }) = self.send_single_message(message, None).map_err(|e| match e {
             MessageError::Io(io) => SaslExternalBindError::Io(io),
             MessageError::Message(dec) => SaslExternalBindError::Decode(dec),
+            MessageError::UnsolicitedResponse => SaslExternalBindError::InvalidMessage,
         })?
         else {
-            return Err(SaslExternalBindError::InvalidProtocolOp);
+            return Err(SaslExternalBindError::InvalidMessage);
         };
         match result_code {
             ResultCode::Success => Ok(LdapConnection {
@@ -38,14 +39,14 @@ impl<Stream: std::io::Read + std::io::Write, BindState> LdapConnection<native_tl
 pub enum SaslExternalBindError {
     Io(std::io::Error),
     Decode(rasn::ber::de::DecodeError),
-    InvalidProtocolOp,
+    InvalidMessage,
 }
 impl std::error::Error for SaslExternalBindError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Decode(dec) => Some(dec),
             Self::Io(io) => Some(io),
-            Self::InvalidProtocolOp => None,
+            Self::InvalidMessage => None,
         }
     }
 }
@@ -54,7 +55,7 @@ impl std::fmt::Display for SaslExternalBindError {
         match self {
             Self::Decode(d) => write!(f, "Failed to decode message: {d}"),
             Self::Io(io) => write!(f, "IO error: {io}"),
-            Self::InvalidProtocolOp => write!(f, "server sent an invalid Protocol op"),
+            Self::InvalidMessage => write!(f, "server sent an invalid Protocol op or message ID"),
         }
     }
 }

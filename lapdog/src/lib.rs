@@ -1,8 +1,10 @@
+use rasn::error::DecodeErrorKind;
 use rasn_ldap::{LdapMessage, ProtocolOp};
 use std::{
     fmt::Display,
     io::{ErrorKind, Read, Write},
     net::{TcpStream, ToSocketAddrs},
+    time::Duration,
 };
 
 use crate::bind::Unbound;
@@ -26,11 +28,13 @@ where
     next_message_id: u32,
     state: BindState,
 }
+
 // Could technically be on generic T but would have to include
 // type annotations then
 impl LdapConnection<TcpStream, Unbound> {
     pub fn connect(addr: impl ToSocketAddrs) -> Result<LdapConnection<TcpStream, Unbound>, std::io::Error> {
         let stream = TcpStream::connect(addr)?;
+        stream.set_read_timeout(Some(Duration::from_secs(10)))?;
         Ok(LdapConnection::new_unbound(stream))
     }
 }
@@ -59,24 +63,37 @@ impl<Stream: Read + Write, T> LdapConnection<Stream, T> {
         protocol_op: ProtocolOp,
         _controls: Option<()>,
     ) -> Result<ProtocolOp, MessageError> {
-        let message = LdapMessage::new(self.get_and_increase_message_id(), protocol_op);
+        let message_id = self.get_and_increase_message_id();
+        let message = LdapMessage::new(message_id, protocol_op);
         let encoded = rasn::ber::encode(&message).expect("Failed to encode BER message");
         self.stream.write_all(&encoded).map_err(MessageError::Io)?;
         let mut buf = Vec::new();
-        let mut temp_buffer = [0u8; 1024];
-        let response_msg = match self.stream.read(&mut temp_buffer).map_err(MessageError::Io)? {
-            0 => {
-                return Err(MessageError::Io(std::io::Error::new(
-                    ErrorKind::ConnectionReset,
-                    "connection closed",
-                )));
-            }
-            n => {
-                buf.extend_from_slice(&temp_buffer[..n]);
-                rasn::ber::decode::<LdapMessage>(&buf).map_err(MessageError::Message)?
-            }
-        };
-        Ok(response_msg.protocol_op)
+        let mut temp_buffer = [0u8; 2048];
+        loop {
+            match self.stream.read(&mut temp_buffer).map_err(MessageError::Io)? {
+                0 => {
+                    return Err(MessageError::Io(std::io::Error::new(
+                        ErrorKind::ConnectionReset,
+                        "connection closed",
+                    )));
+                }
+                n => {
+                    buf.extend_from_slice(&temp_buffer[..n]);
+                    match rasn::ber::decode::<LdapMessage>(&buf) {
+                        Ok(res) => {
+                            if res.message_id != message_id {
+                                return Err(MessageError::UnsolicitedResponse);
+                            }
+                            return Ok(res.protocol_op);
+                        }
+                        Err(e) if matches!(e.kind.as_ref(), DecodeErrorKind::Incomplete { .. }) => {
+                            continue;
+                        }
+                        Err(e) => return Err(MessageError::Message(e)),
+                    }
+                }
+            };
+        }
     }
 }
 
@@ -84,14 +101,16 @@ impl<Stream: Read + Write, T> LdapConnection<Stream, T> {
 enum MessageError {
     Io(std::io::Error),
     Message(rasn::ber::de::DecodeError),
+    UnsolicitedResponse,
 }
 
 impl std::error::Error for MessageError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        Some(match self {
-            Self::Io(io) => io,
-            Self::Message(m) => m,
-        })
+        match self {
+            Self::Io(io) => Some(io),
+            Self::Message(m) => Some(m),
+            Self::UnsolicitedResponse => None,
+        }
     }
 }
 impl Display for MessageError {
@@ -99,6 +118,7 @@ impl Display for MessageError {
         match self {
             Self::Io(io) => write!(f, "io: {io}"),
             Self::Message(m) => write!(f, "message: {m}"),
+            Self::UnsolicitedResponse => write!(f, "Message IDs don't align"),
         }
     }
 }
