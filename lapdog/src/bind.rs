@@ -6,13 +6,14 @@ use crate::LdapConnection;
 
 pub mod error;
 pub use error::{AuthenticatedBindError, SimpleBindError, UnauthenticatedBindError};
+#[cfg(feature = "native-tls")]
+pub mod native_tls;
 
 /// Allows extraction of the last diagnostics message in a successful bind operation
 pub trait Bound {
     fn get_bind_diagnostics_message(&self) -> &str;
 }
-
-macro_rules! impl_for_bound {
+macro_rules! impl_bound {
     ([$($typ:ident),*]) => {
         $(
             /// Typestate of the last successful bind operation on this connection
@@ -32,7 +33,8 @@ macro_rules! impl_for_bound {
         )*
     };
 }
-impl_for_bound!([BoundAnonymously, BoundAuthenticated, BoundUnauthenticated]);
+pub(crate) use impl_bound;
+impl_bound!([BoundAnonymously, BoundAuthenticated, BoundUnauthenticated]);
 /// No bind operation has been done on this connection
 pub struct Unbound {
     pub(crate) _priv: (),
@@ -191,72 +193,6 @@ impl<Stream: Read + Write, OldBindState> LdapConnection<Stream, OldBindState> {
             ResultCode::ConfidentialityRequired => Err(SimpleBindError::ConfidentialityRequired(message)),
             ResultCode::InappropriateAuthentication => Err(SimpleBindError::InappropriateAuthentication(message)),
             other => Err(SimpleBindError::Other(other as u32, message)),
-        }
-    }
-}
-
-#[cfg(feature = "native-tls")]
-pub mod native_tls {
-    use rasn_ldap::{
-        AuthenticationChoice, BindRequest, BindResponse, LdapString, ProtocolOp, ResultCode, SaslCredentials,
-    };
-
-    use crate::{LdapConnection, MessageError};
-
-    unsafe impl<T> super::Safe for native_tls::TlsStream<T> {}
-    impl_for_bound!([BoundNativeTls]);
-
-    impl<Stream: std::io::Read + std::io::Write, BindState> LdapConnection<native_tls::TlsStream<Stream>, BindState> {
-        pub fn sasl_external_bind(
-            mut self,
-            auth_z_id: &str,
-        ) -> Result<LdapConnection<native_tls::TlsStream<Stream>, BoundNativeTls>, SaslExternalBindError> {
-            let auth = AuthenticationChoice::Sasl(SaslCredentials::new("EXTERNAL".into(), None));
-            let message = ProtocolOp::BindRequest(BindRequest::new(3, auth_z_id.into(), auth));
-            let ProtocolOp::BindResponse(BindResponse {
-                result_code,
-                diagnostic_message: LdapString(diagnostic_message),
-                ..
-            }) = self.send_single_message(message, None).map_err(|e| match e {
-                MessageError::Io(io) => SaslExternalBindError::Io(io),
-                MessageError::Message(dec) => SaslExternalBindError::Decode(dec),
-            })?
-            else {
-                return Err(SaslExternalBindError::InvalidProtocolOp);
-            };
-            match result_code {
-                ResultCode::Success => Ok(LdapConnection {
-                    stream: self.stream,
-                    next_message_id: self.next_message_id,
-                    state: BoundNativeTls::new(diagnostic_message.into_boxed_str()),
-                }),
-                _ => unimplemented!(),
-            }
-        }
-    }
-
-    #[derive(Debug)]
-    pub enum SaslExternalBindError {
-        Io(std::io::Error),
-        Decode(rasn::ber::de::DecodeError),
-        InvalidProtocolOp,
-    }
-    impl std::error::Error for SaslExternalBindError {
-        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-            match self {
-                Self::Decode(dec) => Some(dec),
-                Self::Io(io) => Some(io),
-                Self::InvalidProtocolOp => None,
-            }
-        }
-    }
-    impl std::fmt::Display for SaslExternalBindError {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            match self {
-                Self::Decode(d) => write!(f, "Failed to decode message: {d}"),
-                Self::Io(io) => write!(f, "IO error: {io}"),
-                Self::InvalidProtocolOp => write!(f, "server sent an invalid Protocol op"),
-            }
         }
     }
 }
