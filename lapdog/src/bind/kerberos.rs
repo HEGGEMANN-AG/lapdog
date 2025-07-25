@@ -14,7 +14,13 @@ impl<Stream: Read + Write, BindState> LdapConnection<Stream, BindState> {
         mut self,
         service_principal: &str,
     ) -> Result<LdapConnection<Stream, BoundKerberos>, BindKerberosError> {
-        let (mut ctx, msg) = ClientCtx::new(InitiateFlags::empty(), None, service_principal, None).unwrap();
+        let (mut ctx, msg) = ClientCtx::new(
+            InitiateFlags::from_bits_retain(0x2 | 0x4 | 0x8 | 0x20),
+            None,
+            service_principal,
+            None,
+        )
+        .unwrap();
         let mut msg = msg.to_vec();
         loop {
             ctx = match ctx.step(&msg).unwrap() {
