@@ -7,6 +7,9 @@ use std::{
 
 use crate::bind::Unbound;
 
+pub const LDAP_PORT: u16 = 389;
+pub const LDAPS_PORT: u16 = 636;
+
 /// Re-exports from native-tls necessary for the compatibility methods
 #[cfg(feature = "native-tls")]
 pub mod native_tls;
