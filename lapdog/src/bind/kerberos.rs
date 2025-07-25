@@ -1,7 +1,6 @@
 use std::io::{Read, Write};
 
 use cross_krb5::{ClientCtx, InitiateFlags, K5Ctx, Step};
-use native_tls::TlsStream;
 use rasn_ldap::{AuthenticationChoice, BindRequest, BindResponse, ProtocolOp, ResultCode, SaslCredentials};
 
 use crate::{LdapConnection, MessageError};
@@ -25,7 +24,7 @@ impl LdapStream for std::net::TcpStream {
 }
 
 #[cfg(feature = "native-tls")]
-impl<S: Read + Write> LdapStream for TlsStream<S> {
+impl<S: Read + Write> LdapStream for native_tls::TlsStream<S> {
     type Err = native_tls::Error;
     fn channel_bindings(&self) -> Result<Option<Vec<u8>>, Self::Err> {
         self.tls_server_end_point()
