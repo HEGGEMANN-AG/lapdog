@@ -1,4 +1,7 @@
-use std::io::{Read, Write};
+use std::{
+    io::{Read, Write},
+    ops::Deref,
+};
 
 use cross_krb5::{ClientCtx, InitiateFlags, Step};
 use rasn_ldap::{AuthenticationChoice, BindRequest, BindResponse, ProtocolOp, ResultCode, SaslCredentials};
@@ -14,6 +17,7 @@ impl<Stream: Read + Write, BindState> LdapConnection<Stream, BindState> {
         mut self,
         service_principal: &str,
     ) -> Result<LdapConnection<Stream, BoundKerberos>, BindKerberosError> {
+        eprintln!("Initializing kerberos bind with SPN: {service_principal}");
         let (mut ctx, msg) = ClientCtx::new(
             InitiateFlags::from_bits_retain(0x2 | 0x4 | 0x8 | 0x20),
             None,
@@ -21,6 +25,7 @@ impl<Stream: Read + Write, BindState> LdapConnection<Stream, BindState> {
             None,
         )
         .unwrap();
+        eprintln!("Initial GSSAPI token: {:?}", msg.deref());
         let mut msg = msg.to_vec();
         loop {
             ctx = match ctx.step(&msg).unwrap() {
@@ -37,8 +42,9 @@ impl<Stream: Read + Write, BindState> LdapConnection<Stream, BindState> {
                             next_message_id: self.next_message_id,
                             state: BoundKerberos { _kerberos },
                         });
+                    } else {
+                        unimplemented!()
                     }
-                    unimplemented!()
                 }
                 Step::Continue((pending, ticket)) => {
                     let BindResponse { server_sasl_creds, .. } = self.send_kerberos_token_msg(&ticket)?;
