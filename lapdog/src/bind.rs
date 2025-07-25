@@ -19,6 +19,11 @@ macro_rules! impl_for_bound {
             pub struct $typ {
                 bind_diagnostics_message: Box<str>,
             }
+            impl $typ {
+                fn new(bind_diagnostics_message: Box<str>) -> Self {
+                    Self { bind_diagnostics_message }
+                }
+            }
             impl Bound for $typ {
                 fn get_bind_diagnostics_message(&self) -> &str {
                     &self.bind_diagnostics_message
@@ -115,9 +120,7 @@ impl<Stream: Read + Write, OldBindState> LdapConnection<Stream, OldBindState> {
 // The LDAP standard recommends to implement these different types of bind explicitly, so I'm doing it this way
 impl<Stream: Read + Write, OldBindState> LdapConnection<Stream, OldBindState> {
     fn inner_bind_simple_anonymously(self) -> Result<LdapConnection<Stream, BoundAnonymously>, SimpleBindError> {
-        self.bind_simple_raw("", &[], |bind_diagnostics_message| BoundAnonymously {
-            bind_diagnostics_message,
-        })
+        self.bind_simple_raw("", &[], BoundAnonymously::new)
     }
     fn inner_bind_simple_unauthenticated(
         self,
@@ -126,10 +129,8 @@ impl<Stream: Read + Write, OldBindState> LdapConnection<Stream, OldBindState> {
         if name.is_empty() {
             return Err(UnauthenticatedBindError::EmptyUsername);
         }
-        self.bind_simple_raw(name, &[], |bind_diagnostics_message| BoundUnauthenticated {
-            bind_diagnostics_message,
-        })
-        .map_err(UnauthenticatedBindError::Bind)
+        self.bind_simple_raw(name, &[], BoundUnauthenticated::new)
+            .map_err(UnauthenticatedBindError::Bind)
     }
     fn inner_bind_simple_authenticated(
         self,
@@ -142,10 +143,8 @@ impl<Stream: Read + Write, OldBindState> LdapConnection<Stream, OldBindState> {
         if name.is_empty() {
             return Err(AuthenticatedBindError::EmptyUsername);
         }
-        self.bind_simple_raw(name, password, |bind_diagnostics_message| BoundAuthenticated {
-            bind_diagnostics_message,
-        })
-        .map_err(AuthenticatedBindError::Bind)
+        self.bind_simple_raw(name, password, BoundAuthenticated::new)
+            .map_err(AuthenticatedBindError::Bind)
     }
     /// Internal method with name and password
     ///
