@@ -6,28 +6,40 @@ use crate::LdapConnection;
 
 pub mod error;
 pub use error::{AuthenticatedBindError, SimpleBindError, UnauthenticatedBindError};
+#[cfg(feature = "kerberos")]
+pub mod kerberos;
+#[cfg(feature = "native-tls")]
+pub mod native_tls;
 
 /// Allows extraction of the last diagnostics message in a successful bind operation
 pub trait Bound {
     fn get_bind_diagnostics_message(&self) -> &str;
 }
-
-macro_rules! impl_for_bound {
+macro_rules! impl_bound {
     ([$($typ:ident),*]) => {
         $(
-            /// Typestate of the last successful bind operation on this connection
-            pub struct $typ {
-                bind_diagnostics_message: Box<str>,
-            }
-            impl Bound for $typ {
-                fn get_bind_diagnostics_message(&self) -> &str {
-                    &self.bind_diagnostics_message
-                }
-            }
+            impl_bound!($typ);
         )*
     };
+    ($typ:ident) => {
+        /// Typestate of the last successful bind operation on this connection
+        pub struct $typ {
+            bind_diagnostics_message: Box<str>,
+        }
+        impl $typ {
+            pub(crate) fn new(bind_diagnostics_message: Box<str>) -> Self {
+                Self { bind_diagnostics_message }
+            }
+        }
+        impl crate::bind::Bound for $typ {
+            fn get_bind_diagnostics_message(&self) -> &str {
+                &self.bind_diagnostics_message
+            }
+        }
+    };
 }
-impl_for_bound!([BoundAnonymously, BoundAuthenticated, BoundUnauthenticated]);
+pub(crate) use impl_bound;
+impl_bound!([BoundAnonymously, BoundAuthenticated, BoundUnauthenticated]);
 /// No bind operation has been done on this connection
 pub struct Unbound {
     pub(crate) _priv: (),
@@ -37,8 +49,7 @@ pub struct Unbound {
 /// This is just an inconvenience to make the user think about whether a stream is using TLS
 /// or another encryption mechanism
 pub unsafe trait Safe {}
-#[cfg(feature = "native-tls")]
-unsafe impl<T> Safe for native_tls::TlsStream<T> {}
+
 impl<Stream: Read + Write + Safe, OldBindState> LdapConnection<Stream, OldBindState> {
     /// Binds the connection anonymously, aka without a password or username
     ///
@@ -116,9 +127,7 @@ impl<Stream: Read + Write, OldBindState> LdapConnection<Stream, OldBindState> {
 // The LDAP standard recommends to implement these different types of bind explicitly, so I'm doing it this way
 impl<Stream: Read + Write, OldBindState> LdapConnection<Stream, OldBindState> {
     fn inner_bind_simple_anonymously(self) -> Result<LdapConnection<Stream, BoundAnonymously>, SimpleBindError> {
-        self.bind_simple_raw("", &[], |bind_diagnostics_message| BoundAnonymously {
-            bind_diagnostics_message,
-        })
+        self.bind_simple_raw("", &[], BoundAnonymously::new)
     }
     fn inner_bind_simple_unauthenticated(
         self,
@@ -127,10 +136,8 @@ impl<Stream: Read + Write, OldBindState> LdapConnection<Stream, OldBindState> {
         if name.is_empty() {
             return Err(UnauthenticatedBindError::EmptyUsername);
         }
-        self.bind_simple_raw(name, &[], |bind_diagnostics_message| BoundUnauthenticated {
-            bind_diagnostics_message,
-        })
-        .map_err(UnauthenticatedBindError::Bind)
+        self.bind_simple_raw(name, &[], BoundUnauthenticated::new)
+            .map_err(UnauthenticatedBindError::Bind)
     }
     fn inner_bind_simple_authenticated(
         self,
@@ -143,10 +150,8 @@ impl<Stream: Read + Write, OldBindState> LdapConnection<Stream, OldBindState> {
         if name.is_empty() {
             return Err(AuthenticatedBindError::EmptyUsername);
         }
-        self.bind_simple_raw(name, password, |bind_diagnostics_message| BoundAuthenticated {
-            bind_diagnostics_message,
-        })
-        .map_err(AuthenticatedBindError::Bind)
+        self.bind_simple_raw(name, password, BoundAuthenticated::new)
+            .map_err(AuthenticatedBindError::Bind)
     }
     /// Internal method with name and password
     ///

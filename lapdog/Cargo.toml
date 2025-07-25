@@ -15,11 +15,13 @@ rasn = "0.27.0"
 rasn-ldap = "0.27.0"
 lapdog-derive = { version = "0.2.0", optional = true, path = "../lapdog-derive" }
 native-tls = { version = "0.2.14", optional = true }
+cross-krb5 = { version = "0.4.2", default-features = false, optional = true }
 
 [features]
 default = ["derive"]
 derive = ["dep:lapdog-derive", "from_octets"]
 from_octets = []
+kerberos = ["dep:cross-krb5"]
 native-tls = ["dep:native-tls"]
 
 [dev-dependencies]

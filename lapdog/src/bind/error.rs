@@ -10,6 +10,7 @@ impl From<MessageError> for SimpleBindError {
         match value {
             MessageError::Io(io) => SimpleBindError::IoError(io),
             MessageError::Message(m) => SimpleBindError::MalformedResponse(m),
+            MessageError::UnsolicitedResponse => SimpleBindError::MalformedResponseInvalidId,
         }
     }
 }
@@ -26,6 +27,7 @@ pub enum SimpleBindError {
     MalformedResponse(DecodeError),
     /// Server send SASL creds for a non-sasl method
     MalformedResponseIncludedSasl,
+    MalformedResponseInvalidId,
     Referral {
         referrals: Vec<LdapString>,
         message: Box<str>,
@@ -58,6 +60,7 @@ impl Display for SimpleBindError {
             Self::MalformedResponseNotBindResponse => write!(f, "Server sent non-bind response message"),
             Self::MalformedResponse(message) => write!(f, "Server sent invalid response: {message}"),
             Self::MalformedResponseIncludedSasl => write!(f, "Server sent SASL response credentials"),
+            Self::MalformedResponseInvalidId => write!(f, "Server sent an invalid message ID"),
             Self::OperationsError(op) => write!(f, "Server operations error: {op}"),
             Self::InvalidDn(message) => write!(f, "Invalid DN: {message}"),
             Self::ConfidentialityRequired(message) => write!(f, "Operation requires confidentiality: {message}"),
