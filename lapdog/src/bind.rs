@@ -10,6 +10,8 @@ pub use error::{AuthenticatedBindError, SimpleBindError, UnauthenticatedBindErro
 pub mod kerberos;
 #[cfg(feature = "native-tls")]
 pub mod native_tls;
+#[cfg(feature = "rustls")]
+pub mod rustls;
 
 /// Allows extraction of the last diagnostics message in a successful bind operation
 pub trait Bound {
@@ -198,6 +200,65 @@ impl<Stream: Read + Write, OldBindState> LdapConnection<Stream, OldBindState> {
             ResultCode::ConfidentialityRequired => Err(SimpleBindError::ConfidentialityRequired(message)),
             ResultCode::InappropriateAuthentication => Err(SimpleBindError::InappropriateAuthentication(message)),
             other => Err(SimpleBindError::Other(other as u32, message)),
+        }
+    }
+}
+
+#[cfg(any(feature = "rustls", feature = "native-tls"))]
+impl<Stream: std::io::Read + std::io::Write + Safe, BindState> LdapConnection<Stream, BindState> {
+    fn internal_sasl_external_bind<NewBoundState>(
+        mut self,
+        auth_z_id: &str,
+        bound_factory: impl FnOnce(Box<str>) -> NewBoundState,
+    ) -> Result<LdapConnection<Stream, NewBoundState>, SaslExternalBindError> {
+        use crate::MessageError;
+
+        let auth = AuthenticationChoice::Sasl(rasn_ldap::SaslCredentials::new("EXTERNAL".into(), None));
+        let message = ProtocolOp::BindRequest(BindRequest::new(3, auth_z_id.into(), auth));
+        let ProtocolOp::BindResponse(BindResponse {
+            result_code,
+            diagnostic_message: LdapString(diagnostic_message),
+            ..
+        }) = self.send_single_message(message, None).map_err(|e| match e {
+            MessageError::Io(io) => SaslExternalBindError::Io(io),
+            MessageError::Message(dec) => SaslExternalBindError::Decode(dec),
+            MessageError::UnsolicitedResponse => SaslExternalBindError::InvalidMessage,
+        })?
+        else {
+            return Err(SaslExternalBindError::InvalidMessage);
+        };
+        match result_code {
+            ResultCode::Success => Ok(LdapConnection {
+                stream: self.stream,
+                next_message_id: self.next_message_id,
+                state: bound_factory(diagnostic_message.into_boxed_str()),
+            }),
+            _ => unimplemented!(),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum SaslExternalBindError {
+    Io(std::io::Error),
+    Decode(rasn::ber::de::DecodeError),
+    InvalidMessage,
+}
+impl std::error::Error for SaslExternalBindError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Decode(dec) => Some(dec),
+            Self::Io(io) => Some(io),
+            Self::InvalidMessage => None,
+        }
+    }
+}
+impl std::fmt::Display for SaslExternalBindError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Decode(d) => write!(f, "Failed to decode message: {d}"),
+            Self::Io(io) => write!(f, "IO error: {io}"),
+            Self::InvalidMessage => write!(f, "server sent an invalid Protocol op or message ID"),
         }
     }
 }

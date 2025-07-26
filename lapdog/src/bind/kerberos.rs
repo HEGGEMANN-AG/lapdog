@@ -2,6 +2,8 @@ use std::io::{Read, Write};
 
 use cross_krb5::{ClientCtx, InitiateFlags, K5Ctx, Step};
 use rasn_ldap::{AuthenticationChoice, BindRequest, BindResponse, ProtocolOp, ResultCode, SaslCredentials};
+#[cfg(feature = "rustls")]
+use rustls::ClientConnection;
 
 use crate::{LdapConnection, MessageError};
 
@@ -9,7 +11,8 @@ pub struct BoundKerberos {
     _priv: (),
 }
 
-// Markers for allowing channel binding an requiring an extra security layer
+/// Markers for allowing channel binding an requiring an extra security layer
+/// This is extra data required for Kerberos functionality
 pub trait LdapStream: Read + Write {
     type Err;
     fn channel_bindings(&self) -> Result<Option<Vec<u8>>, Self::Err> {
@@ -28,6 +31,32 @@ impl<S: Read + Write> LdapStream for native_tls::TlsStream<S> {
     type Err = native_tls::Error;
     fn channel_bindings(&self) -> Result<Option<Vec<u8>>, Self::Err> {
         self.tls_server_end_point()
+    }
+    fn needs_security_layer() -> bool {
+        false
+    }
+}
+#[cfg(feature = "rustls")]
+impl<S: Read + Write> LdapStream for rustls::StreamOwned<ClientConnection, S> {
+    type Err = std::convert::Infallible;
+    fn channel_bindings(&self) -> Result<Option<Vec<u8>>, Self::Err> {
+        match self.conn.peer_certificates() {
+            None | Some([]) => Ok(None),
+            Some([first, ..]) => {
+                use sha2::Digest;
+                use std::fmt::Write;
+                let mut hasher = sha2::Sha256::new();
+                hasher.update(first.as_ref());
+                let hash = hasher.finalize().to_vec();
+                let mut output = String::with_capacity(85);
+                output.push_str("tls-server-end-point:");
+                for num in hash {
+                    write!(output, "{num:x}").expect("Writing to string");
+                }
+                dbg!(output.capacity(), output.len());
+                Ok(Some(output.into()))
+            }
+        }
     }
     fn needs_security_layer() -> bool {
         false

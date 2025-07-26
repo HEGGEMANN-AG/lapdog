@@ -15,6 +15,8 @@ pub const LDAPS_PORT: u16 = 636;
 /// Re-exports from native-tls necessary for the compatibility methods
 #[cfg(feature = "native-tls")]
 pub mod native_tls;
+#[cfg(feature = "rustls")]
+pub mod rustls;
 
 pub mod bind;
 pub mod search;
