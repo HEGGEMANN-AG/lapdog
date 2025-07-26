@@ -195,23 +195,20 @@ where
                                 self.done = true;
                                 let diagnostic_message = diagnostic_message.0.into_boxed_str();
                                 let matched_dn = matched_dn.0.into_boxed_str();
-                                match result_code {
-                                    ResultCode::Success => return None,
+                                return match result_code {
+                                    ResultCode::Success => None,
                                     ResultCode::NoSuchObject => {
-                                        return Some(Err(SearchResultError::NoSuchObject(
-                                            matched_dn,
-                                            diagnostic_message,
-                                        )));
+                                        Some(Err(SearchResultError::NoSuchObject(matched_dn, diagnostic_message)))
                                     }
                                     ResultCode::OperationsError => {
-                                        return Some(Err(SearchResultError::OperationsError(diagnostic_message)));
+                                        Some(Err(SearchResultError::OperationsError(diagnostic_message)))
                                     }
                                     result_code => Some(Err::<Output, _>(SearchResultError::Other {
                                         result_code,
                                         diagnostic_message,
                                         matched_dn,
                                     })),
-                                }
+                                };
                             }
                             ProtocolOp::SearchResRef(SearchResultReference(_)) => continue,
                             po => return Some(Err(SearchResultError::InvalidLdapMessage(po))),
