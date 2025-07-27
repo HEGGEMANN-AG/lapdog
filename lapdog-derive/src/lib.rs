@@ -1,6 +1,8 @@
+use std::{collections::HashMap, ops::BitOr};
+
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
-use syn::{DataStruct, DeriveInput, Field, Fields, Ident};
+use syn::{DataStruct, DeriveInput, Field, Fields, Ident, parse_quote};
 
 #[proc_macro_derive(Entry, attributes(lapdog))]
 pub fn implement_from_entry(item: proc_macro::TokenStream) -> proc_macro::TokenStream {
@@ -19,14 +21,83 @@ pub fn implement_from_entry(item: proc_macro::TokenStream) -> proc_macro::TokenS
         Ok(f) => f,
         Err(e) => return e.into_compile_error().into(),
     };
+    let (impl_generics, type_generics, where_clause) = input.generics.split_for_impl();
+
+    // Generics' type parameters
+    let generic_params: Vec<syn::Ident> = input
+        .generics
+        .params
+        .iter()
+        .filter_map(|param| match param {
+            syn::GenericParam::Type(type_param) => Some(type_param.ident.clone()),
+            _ => None,
+        })
+        .collect();
+
+    // If a field has a generic parameter
+    let mut generic_bounds = HashMap::<syn::Ident, NeedsBound>::new();
+    for field in &fields {
+        if let syn::Type::Path(type_path) = &field.field.ty {
+            if let Some(ident) = type_path.path.get_ident() {
+                if generic_params.contains(ident) {
+                    let this_field = if field.multiple {
+                        NeedsBound::Multiple
+                    } else {
+                        NeedsBound::Octet
+                    };
+                    generic_bounds
+                        .entry(ident.clone())
+                        .and_modify(|x| *x = *x | this_field)
+                        .or_insert(this_field);
+                }
+            }
+        }
+    }
+
+    let mut where_preds: Vec<syn::WherePredicate> = where_clause
+        .map(|wc| wc.predicates.clone().into_iter().collect())
+        .unwrap_or_default();
+
+    for (ident, needs_bound) in generic_bounds {
+        let multi = || {
+            [
+                parse_quote!(#ident: lapdog::search::FromMultipleOctetStrings),
+                parse_quote!(<#ident as lapdog::search::FromMultipleOctetStrings>::Err: 'static),
+            ]
+        };
+        let single = || {
+            [
+                parse_quote!(#ident: lapdog::search::FromOctetString),
+                parse_quote!(<#ident as lapdog::search::FromOctetString>::Err: 'static),
+            ]
+        };
+        match needs_bound {
+            NeedsBound::Both => {
+                where_preds.extend(multi());
+                where_preds.extend(single());
+            }
+            NeedsBound::Multiple => {
+                where_preds.extend(multi());
+            }
+            NeedsBound::Octet => {
+                where_preds.extend(single());
+            }
+        }
+    }
+
+    let where_clause = if where_preds.is_empty() {
+        quote!()
+    } else {
+        quote!(where #(#where_preds),*)
+    };
 
     let insert_object_name = object_name_field.as_ref().map(insert_object_name);
     let field_quotes = fields.iter().map(field_line);
     let field_names = fields.iter().map(|x| x.ident());
     let attribute_names = fields.iter().map(|x| x.attribute_name.clone());
     quote!(
-        impl lapdog::search::FromEntry for #name {
-            fn from_entry(entry: lapdog::search::RawEntry) -> Result<#name, lapdog::search::FailedToGetFromEntry> {
+        impl #impl_generics lapdog::search::FromEntry for #name #type_generics #where_clause {
+            fn from_entry(entry: lapdog::search::RawEntry) -> Result<#name #type_generics, lapdog::search::FailedToGetFromEntry> {
                 #( #field_quotes )*
                 Ok(#name { #(#field_names,)* #insert_object_name })
             }
@@ -37,6 +108,23 @@ pub fn implement_from_entry(item: proc_macro::TokenStream) -> proc_macro::TokenS
         }
     )
     .into()
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum NeedsBound {
+    Octet,
+    Multiple,
+    Both,
+}
+impl BitOr for NeedsBound {
+    type Output = NeedsBound;
+
+    fn bitor(self, rhs: Self) -> Self::Output {
+        match (self, rhs) {
+            (a, b) if a == b => a,
+            _ => NeedsBound::Both,
+        }
+    }
 }
 
 fn insert_object_name(field: &Field) -> TokenStream {

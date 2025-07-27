@@ -16,7 +16,7 @@ fn main() {
         b"Steve".to_vec().into(),
     ))));
     let search_results = bound
-        .search::<UserEntry>(
+        .search::<UserEntry<Vec<u32>, Vec<u8>>>(
             "OU=Specialists,DC=company,DC=com",
             SearchRequestScope::WholeSubtree,
             SearchRequestDerefAliases::DerefAlways,
@@ -34,7 +34,10 @@ fn main() {
 }
 
 #[derive(Entry)]
-struct UserEntry {
+struct UserEntry<U, T> {
+    #[lapdog(multiple)]
+    _field: U,
+    _some_field: T,
     #[lapdog(rename = "sAMAccountName")]
     sam_account_name: String,
     company: String,
