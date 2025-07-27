@@ -24,6 +24,14 @@ impl<T: FromOctetString> FromOctetString for Box<T> {
         Ok(Box::new(T::from_octet_string(bytes)?))
     }
 }
+
+/// This implementation is like this so `default` may be used with option.
+impl<T: FromOctetString> FromOctetString for Option<T> {
+    type Err = T::Err;
+    fn from_octet_string(bytes: &[u8]) -> Result<Self, Self::Err> {
+        T::from_octet_string(bytes).map(Some)
+    }
+}
 macro_rules! from_octet_for_integer {
     ($t:ty) => {
         impl FromOctetString for $t {
@@ -81,6 +89,16 @@ impl FromOctetString for Vec<u8> {
     type Err = Infallible;
     fn from_octet_string(bytes: &[u8]) -> Result<Self, Self::Err> {
         Ok(bytes.to_vec())
+    }
+}
+
+impl<T> FromMultipleOctetStrings for Box<[T]>
+where
+    T: FromOctetString,
+{
+    type Err = T::Err;
+    fn from_multiple_octet_strings<'a>(values: impl Iterator<Item = &'a [u8]>) -> Result<Self, Self::Err> {
+        Vec::from_multiple_octet_strings(values).map(|res| res.into_boxed_slice())
     }
 }
 

@@ -40,4 +40,6 @@ struct UserEntry {
     company: String,
     #[lapdog(multiple, rename = "objectClass")]
     _object_class: Vec<String>,
+    #[lapdog(default)]
+    _probably_not_present_field: Option<bool>,
 }
