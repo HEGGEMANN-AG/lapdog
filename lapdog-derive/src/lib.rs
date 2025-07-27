@@ -50,7 +50,6 @@ fn insert_object_name(field: &Field) -> TokenStream {
 struct AttributeField {
     attribute_name: String,
     multiple: bool,
-    default: bool,
     field: Field,
 }
 impl AttributeField {
@@ -104,9 +103,6 @@ fn parse_fields(
                 if meta.path.require_ident()? == "multiple" {
                     multiple = true;
                 }
-                if meta.path.require_ident()? == "default" {
-                    default = true;
-                }
                 Ok(())
             })?;
             if has_set_object_name_field {
@@ -118,7 +114,6 @@ fn parse_fields(
         fields.push(AttributeField {
             attribute_name,
             multiple,
-            default,
             field,
         })
     }
@@ -129,26 +124,32 @@ fn field_line(data: &AttributeField) -> TokenStream {
     let lookup_name = &data.attribute_name;
     let field_type = &data.field.ty;
     let varname = format_ident!("{}", data.ident());
-    let fallback = if data.default {
-        quote! { <#field_type as Default>::default() }
-    } else {
-        quote! { return Err(lapdog::search::FailedToGetFromEntry::MissingField(#lookup_name)) }
-    };
     if data.multiple {
         quote! {
-            let #varname = match entry.attributes.iter().find(|x| x.r#type == #lookup_name) {
-                Some(attrs) => <#field_type as lapdog::search::FromMultipleOctetStrings>::from_multiple_octet_strings(attrs.values.iter().map(|x| x.as_ref()))
-                    .map_err(|b| lapdog::search::FailedToGetFromEntry::FailedToParseField(#lookup_name, Box::new(b)))?,
-                None => {#fallback},
-            };
+            let #varname = <#field_type as lapdog::search::FromMultipleOctetStrings>::from_multiple_octet_strings(
+                entry.attributes
+                    .iter()
+                    .find(|x| x.r#type == #lookup_name)
+                    .ok_or(lapdog::search::FailedToGetFromEntry::MissingField(#lookup_name))?
+                    .values
+                    .iter()
+                    .map(|x| x.as_ref())
+                ).map_err(|b| lapdog::search::FailedToGetFromEntry::FailedToParseField(#lookup_name, Box::new(b)))?;
         }
     } else {
         quote! {
-            let #varname = match entry.attributes.iter().find(|x| x.r#type == #lookup_name).map(|x| x.values.as_slice()) {
-                Some([attr]) => <#field_type as lapdog::search::FromOctetString>::from_octet_string(attr).map_err(|b| lapdog::search::FailedToGetFromEntry::FailedToParseField(#lookup_name, Box::new(b)))?,
-                Some([]) | None => {#fallback},
-                Some(_) => {return Err(lapdog::search::FailedToGetFromEntry::TooManyValues(#lookup_name))}
-            };
+            let #varname = <#field_type as lapdog::search::FromOctetString>::from_octet_string(match
+                entry.attributes
+                    .iter()
+                    .find(|x| x.r#type == #lookup_name)
+                    .ok_or(lapdog::search::FailedToGetFromEntry::MissingField(#lookup_name))?
+                    .values
+                    .as_slice() {
+                    [] => {return Err(lapdog::search::FailedToGetFromEntry::MissingField(#lookup_name));},
+                    [value] => value,
+                    _ => {return Err(lapdog::search::FailedToGetFromEntry::TooManyValues(#lookup_name));}
+                }
+            ).map_err(|b| lapdog::search::FailedToGetFromEntry::FailedToParseField(#lookup_name, Box::new(b)))?;
         }
     }
 }
