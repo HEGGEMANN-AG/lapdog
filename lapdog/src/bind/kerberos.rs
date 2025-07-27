@@ -1,9 +1,11 @@
-use std::io::{Read, Write};
-
 use cross_krb5::{ClientCtx, InitiateFlags, K5Ctx, Step};
 use rasn_ldap::{AuthenticationChoice, BindRequest, BindResponse, ProtocolOp, ResultCode, SaslCredentials};
 #[cfg(feature = "rustls")]
 use rustls::ClientConnection;
+use std::{
+    convert::Infallible,
+    io::{Read, Write},
+};
 
 use crate::{LdapConnection, MessageError};
 
@@ -23,7 +25,7 @@ pub trait LdapStream: Read + Write {
     }
 }
 impl LdapStream for std::net::TcpStream {
-    type Err = std::convert::Infallible;
+    type Err = Infallible;
 }
 
 #[cfg(feature = "native-tls")]
@@ -38,7 +40,7 @@ impl<S: Read + Write> LdapStream for native_tls::TlsStream<S> {
 }
 #[cfg(feature = "rustls")]
 impl<S: Read + Write> LdapStream for rustls::StreamOwned<ClientConnection, S> {
-    type Err = std::convert::Infallible;
+    type Err = Infallible;
     fn channel_bindings(&self) -> Result<Option<Vec<u8>>, Self::Err> {
         match self.conn.peer_certificates() {
             None | Some([]) => Ok(None),
@@ -175,7 +177,7 @@ impl<Stream: LdapStream, B> LdapConnection<Stream, B> {
     }
 }
 #[derive(Debug)]
-pub enum BindKerberosError<E> {
+pub enum BindKerberosError<E = Infallible> {
     InvalidMessage,
     FailedToGetChannelBindings(E),
     ServerSentNoCredentials,
