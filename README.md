@@ -6,7 +6,6 @@ Supports simple, Kerberos and (panicking) TLS external binding with both [rustls
 
 Upcoming/Planned features:
 - Modify/Delete etc
-- Default attribute for derive (optional handling of missing attributes).
 
 So far, all filtering and scoping is redirected towards the dependency library [rasn-ldap](https://crates.io/crates/rasn-ldap)
 
