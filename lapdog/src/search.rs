@@ -9,9 +9,10 @@ use crate::LdapConnection;
 #[cfg(feature = "derive")]
 pub use lapdog_derive::Entry;
 use rasn::error::DecodeError;
+pub use rasn_ldap::{Filter, SearchRequestDerefAliases, SearchRequestScope};
 use rasn_ldap::{
-    Filter, LdapMessage, LdapResult, LdapString, PartialAttribute, ProtocolOp, ResultCode, SearchRequest,
-    SearchRequestDerefAliases, SearchRequestScope, SearchResultDone, SearchResultEntry, SearchResultReference,
+    LdapMessage, LdapResult, LdapString, PartialAttribute, ProtocolOp, ResultCode, SearchRequest, SearchResultDone,
+    SearchResultEntry, SearchResultReference,
 };
 
 #[cfg(feature = "from_octets")]
