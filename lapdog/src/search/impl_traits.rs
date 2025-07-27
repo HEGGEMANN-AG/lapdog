@@ -12,6 +12,12 @@ impl FromOctetString for String {
         String::from_utf8(bytes.to_vec())
     }
 }
+impl FromOctetString for Box<str> {
+    type Err = std::string::FromUtf8Error;
+    fn from_octet_string(bytes: &[u8]) -> Result<Self, Self::Err> {
+        String::from_octet_string(bytes).map(|s| s.into_boxed_str())
+    }
+}
 impl FromOctetString for () {
     type Err = Infallible;
     fn from_octet_string(_bytes: &[u8]) -> Result<Self, Self::Err> {
