@@ -217,11 +217,14 @@ where
                     }
                     Err(rasn::ber::de::DecodeError { kind, .. })
                         if matches!(*kind, rasn::ber::de::DecodeErrorKind::Incomplete { .. }) => {}
-                    Err(e) => return Some(Err(SearchResultError::MalformedLdapMessage(e))),
+                    Err(e) => {
+                        return Some(Err(SearchResultError::MalformedLdapMessage(e)));
+                    }
                 }
             }
             match self.connection.stream.read(&mut temp_buffer) {
                 Ok(0) => {
+                    self.done = true;
                     return Some(Err(SearchResultError::Io(std::io::Error::new(
                         ErrorKind::ConnectionReset,
                         "connection closed",
@@ -231,7 +234,12 @@ where
                     buf.extend_from_slice(&temp_buffer[..n]);
                     &buf
                 }
-                Err(e) => return Some(Err(SearchResultError::Io(e))),
+                Err(e) => {
+                    if e.kind() == ErrorKind::ConnectionReset {
+                        self.done = true
+                    }
+                    return Some(Err(SearchResultError::Io(e)));
+                }
             };
         }
     }
