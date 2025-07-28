@@ -7,11 +7,9 @@ use std::{
     io::{Read, Write},
 };
 
-use crate::{LdapConnection, MessageError};
+use crate::{LdapConnection, MessageError, bind::impl_bound};
 
-pub struct BoundKerberos {
-    _priv: (),
-}
+impl_bound!(BoundKerberos);
 
 /// Markers for allowing channel binding an requiring an extra security layer
 /// This is extra data required for Kerberos functionality
@@ -159,11 +157,12 @@ impl<Stream: LdapStream, B> LdapConnection<Stream, B> {
         match self.send_kerberos_token_msg(&size_msg)? {
             BindResponse {
                 result_code: ResultCode::Success,
+                diagnostic_message,
                 ..
             } => Ok(LdapConnection {
                 stream: self.stream,
                 next_message_id: self.next_message_id,
-                state: BoundKerberos { _priv: () },
+                state: BoundKerberos::new(diagnostic_message.0.into_boxed_str()),
             }),
             BindResponse {
                 result_code,
