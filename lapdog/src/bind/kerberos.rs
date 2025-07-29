@@ -16,7 +16,7 @@ impl_bound!(BoundKerberos);
 pub trait LdapStream: Read + Write {
     type Err;
     type OutputStream;
-    fn to_output_stream(self, client_context: ClientCtx) -> Self::OutputStream;
+    fn to_output_stream(self, client_context: ClientCtx, max_buffer_size: usize) -> Self::OutputStream;
     fn channel_bindings(&self) -> Result<Option<Vec<u8>>, Self::Err> {
         Ok(None::<Vec<u8>>)
     }
@@ -27,8 +27,8 @@ pub trait LdapStream: Read + Write {
 impl LdapStream for std::net::TcpStream {
     type Err = Infallible;
     type OutputStream = KerberosEncryptedStream<Self>;
-    fn to_output_stream(self, client_context: ClientCtx) -> Self::OutputStream {
-        KerberosEncryptedStream::new(self, client_context)
+    fn to_output_stream(self, client_context: ClientCtx, max_buffer_size: usize) -> Self::OutputStream {
+        KerberosEncryptedStream::new(self, client_context, max_buffer_size)
     }
 }
 
@@ -36,7 +36,7 @@ impl LdapStream for std::net::TcpStream {
 impl<S: Read + Write> LdapStream for native_tls::TlsStream<S> {
     type Err = native_tls::Error;
     type OutputStream = Self;
-    fn to_output_stream(self, _client_context: ClientCtx) -> Self::OutputStream {
+    fn to_output_stream(self, _client_context: ClientCtx, _: usize) -> Self::OutputStream {
         self
     }
     fn channel_bindings(&self) -> Result<Option<Vec<u8>>, Self::Err> {
@@ -50,7 +50,7 @@ impl<S: Read + Write> LdapStream for native_tls::TlsStream<S> {
 impl<S: Read + Write> LdapStream for rustls::StreamOwned<ClientConnection, S> {
     type Err = Infallible;
     type OutputStream = Self;
-    fn to_output_stream(self, _client_context: ClientCtx) -> Self::OutputStream {
+    fn to_output_stream(self, _client_context: ClientCtx, _: usize) -> Self::OutputStream {
         self
     }
     fn channel_bindings(&self) -> Result<Option<Vec<u8>>, Self::Err> {
@@ -77,6 +77,11 @@ impl<S: Read + Write> LdapStream for rustls::StreamOwned<ClientConnection, S> {
     }
 }
 
+const MUTUAL_AUTH: u32 = 0x2;
+const REPLAY_PROT: u32 = 0x4;
+const SEQUENCE: u32 = 0x8;
+const CONFIDENTIALITY: u32 = 0x10;
+const INTEGRITY: u32 = 0x20;
 impl<Stream: LdapStream, B> LdapConnection<Stream, B>
 where
     Stream::OutputStream: Read + Write,
@@ -84,9 +89,10 @@ where
     pub fn bind_kerberos(
         mut self,
         service_principal: &str,
+        max_buffer_size: Option<usize>,
     ) -> Result<LdapConnection<Stream::OutputStream, BoundKerberos>, BindKerberosError<Stream::Err>> {
         let (mut ctx, initial_token) = ClientCtx::new(
-            InitiateFlags::from_bits_retain(0x2 | 0x4 | 0x8 | 0x10 | 0x20),
+            InitiateFlags::from_bits_retain(MUTUAL_AUTH | REPLAY_PROT | SEQUENCE | CONFIDENTIALITY | INTEGRITY),
             None,
             service_principal,
             self.stream
@@ -116,7 +122,9 @@ where
             ctx = match ctx.step(&msg).map_err(|anyhow_error| {
                 BindKerberosError::InitializeSecurityContext(anyhow_error.into_boxed_dyn_error())
             })? {
-                Step::Finished((kerberos, ticket)) => return self.negotiate_security(kerberos, ticket),
+                Step::Finished((kerberos, ticket)) => {
+                    return self.negotiate_security(kerberos, ticket, max_buffer_size);
+                }
                 Step::Continue((pending, ticket)) => {
                     let BindResponse { server_sasl_creds, .. } = self.send_kerberos_token_msg(&ticket)?;
                     msg = server_sasl_creds
@@ -143,6 +151,7 @@ where
         mut self,
         mut kerberos_context: ClientCtx,
         last_token: Option<impl std::ops::Deref<Target = [u8]>>,
+        own_max_buffer_size: Option<usize>,
     ) -> Result<LdapConnection<Stream::OutputStream, BoundKerberos>, BindKerberosError<Stream::Err>> {
         let BindResponse { server_sasl_creds, .. } =
             self.send_kerberos_token_msg(last_token.as_deref().unwrap_or_default())?;
@@ -156,6 +165,8 @@ where
         if offer_bitmask == 0 && max_buffer_size != 0 {
             return Err(BindKerberosError::NonzeroBufferSize);
         }
+        let own_buffer_size = own_max_buffer_size.unwrap_or(65535);
+        let negotiated_buffer_size = (max_buffer_size as usize).min(own_buffer_size);
         const NO_SECURITY: u8 = 0x01;
         const CONFIDENTIALITY: u8 = 0x04;
         let layer_response = if Stream::needs_security_layer() {
@@ -167,7 +178,7 @@ where
             return Err(BindKerberosError::NoValidSecurityLayerOffered);
         }
         // See fallback in ldap3
-        let response_packet = (layer_response as u32) << 24 | 0x9FFFB8u32;
+        let response_packet = (layer_response as u32) << 24 | (negotiated_buffer_size as u32);
         let size_msg = kerberos_context
             .wrap(true, &response_packet.to_be_bytes())
             .map_err(|e| BindKerberosError::FailedToEncryptNegotiationData(e.into_boxed_dyn_error()))?;
@@ -177,7 +188,7 @@ where
                 diagnostic_message,
                 ..
             } => Ok(LdapConnection {
-                stream: self.stream.to_output_stream(kerberos_context),
+                stream: self.stream.to_output_stream(kerberos_context, negotiated_buffer_size),
                 next_message_id: self.next_message_id,
                 state: BoundKerberos::new(diagnostic_message.0.into_boxed_str()),
             }),
@@ -197,12 +208,14 @@ pub struct KerberosEncryptedStream<S> {
     stream: S,
     client_context: ClientCtx,
     buffer: Vec<u8>,
+    max_buffer_size: usize,
 }
 impl<S> KerberosEncryptedStream<S> {
-    fn new(stream: S, client_context: ClientCtx) -> Self {
+    fn new(stream: S, client_context: ClientCtx, max_buffer_size: usize) -> Self {
         Self {
             stream,
             client_context,
+            max_buffer_size,
             buffer: Vec::new(),
         }
     }
@@ -210,16 +223,38 @@ impl<S> KerberosEncryptedStream<S> {
 impl<S: Read> Read for KerberosEncryptedStream<S> {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         if self.buffer.is_empty() {
-            let mut token = vec![0u8; 4096];
-            let len = self.stream.read(&mut token)?;
-            if len == 0 {
-                return Ok(0);
+            let mut len_buf = [0u8; 4];
+            let mut total_read = 0;
+            while total_read < 4 {
+                let read = self.stream.read(&mut len_buf[total_read..])?;
+                if read == 0 {
+                    return Ok(0);
+                }
+                total_read += read;
+            }
+            let token_length = u32::from_be_bytes(len_buf) as usize;
+
+            if token_length == 0 || token_length > self.max_buffer_size {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("Invalid token length: {token_length}"),
+                ));
+            };
+
+            let mut token = vec![0u8; token_length];
+            let mut total_read = 0;
+            while total_read < token_length {
+                let read = self.stream.read(&mut token[total_read..])?;
+                if read == 0 {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::UnexpectedEof,
+                        "Incomplete token",
+                    ));
+                }
+                total_read += read;
             }
 
-            let unwrapped = self
-                .client_context
-                .unwrap(&token[..len])
-                .map_err(std::io::Error::other)?;
+            let unwrapped = self.client_context.unwrap(&token).map_err(std::io::Error::other)?;
             self.buffer.extend_from_slice(&unwrapped);
         }
 
@@ -232,6 +267,7 @@ impl<S: Read> Read for KerberosEncryptedStream<S> {
 impl<S: Write> Write for KerberosEncryptedStream<S> {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         let wrapped = self.client_context.wrap(true, buf).map_err(std::io::Error::other)?;
+        self.stream.write_all(&(wrapped.len() as u32).to_be_bytes())?;
         self.stream.write_all(&wrapped)?;
         Ok(buf.len())
     }
