@@ -15,6 +15,8 @@ impl_bound!(BoundKerberos);
 /// This is extra data required for Kerberos functionality
 pub trait LdapStream: Read + Write {
     type Err;
+    type OutputStream;
+    fn to_output_stream(self, client_context: ClientCtx) -> Self::OutputStream;
     fn channel_bindings(&self) -> Result<Option<Vec<u8>>, Self::Err> {
         Ok(None::<Vec<u8>>)
     }
@@ -24,11 +26,19 @@ pub trait LdapStream: Read + Write {
 }
 impl LdapStream for std::net::TcpStream {
     type Err = Infallible;
+    type OutputStream = KerberosEncryptedStream<Self>;
+    fn to_output_stream(self, client_context: ClientCtx) -> Self::OutputStream {
+        KerberosEncryptedStream::new(self, client_context)
+    }
 }
 
 #[cfg(feature = "native-tls")]
 impl<S: Read + Write> LdapStream for native_tls::TlsStream<S> {
     type Err = native_tls::Error;
+    type OutputStream = Self;
+    fn to_output_stream(self, _client_context: ClientCtx) -> Self::OutputStream {
+        self
+    }
     fn channel_bindings(&self) -> Result<Option<Vec<u8>>, Self::Err> {
         self.tls_server_end_point()
     }
@@ -39,6 +49,10 @@ impl<S: Read + Write> LdapStream for native_tls::TlsStream<S> {
 #[cfg(feature = "rustls")]
 impl<S: Read + Write> LdapStream for rustls::StreamOwned<ClientConnection, S> {
     type Err = Infallible;
+    type OutputStream = Self;
+    fn to_output_stream(self, _client_context: ClientCtx) -> Self::OutputStream {
+        self
+    }
     fn channel_bindings(&self) -> Result<Option<Vec<u8>>, Self::Err> {
         match self.conn.peer_certificates() {
             None | Some([]) => Ok(None),
@@ -63,11 +77,14 @@ impl<S: Read + Write> LdapStream for rustls::StreamOwned<ClientConnection, S> {
     }
 }
 
-impl<Stream: LdapStream, B> LdapConnection<Stream, B> {
+impl<Stream: LdapStream, B> LdapConnection<Stream, B>
+where
+    Stream::OutputStream: Read + Write,
+{
     pub fn bind_kerberos(
         mut self,
         service_principal: &str,
-    ) -> Result<LdapConnection<KerberosEncryptedStream<Stream>, BoundKerberos>, BindKerberosError<Stream::Err>> {
+    ) -> Result<LdapConnection<Stream::OutputStream, BoundKerberos>, BindKerberosError<Stream::Err>> {
         let (mut ctx, initial_token) = ClientCtx::new(
             InitiateFlags::from_bits_retain(0x2 | 0x4 | 0x8 | 0x10 | 0x20),
             None,
@@ -126,7 +143,7 @@ impl<Stream: LdapStream, B> LdapConnection<Stream, B> {
         mut self,
         mut kerberos_context: ClientCtx,
         last_token: Option<impl std::ops::Deref<Target = [u8]>>,
-    ) -> Result<LdapConnection<KerberosEncryptedStream<Stream>, BoundKerberos>, BindKerberosError<Stream::Err>> {
+    ) -> Result<LdapConnection<Stream::OutputStream, BoundKerberos>, BindKerberosError<Stream::Err>> {
         let BindResponse { server_sasl_creds, .. } =
             self.send_kerberos_token_msg(last_token.as_deref().unwrap_or_default())?;
         let bytes = kerberos_context
@@ -160,7 +177,7 @@ impl<Stream: LdapStream, B> LdapConnection<Stream, B> {
                 diagnostic_message,
                 ..
             } => Ok(LdapConnection {
-                stream: KerberosEncryptedStream::new(self.stream, kerberos_context),
+                stream: self.stream.to_output_stream(kerberos_context),
                 next_message_id: self.next_message_id,
                 state: BoundKerberos::new(diagnostic_message.0.into_boxed_str()),
             }),
