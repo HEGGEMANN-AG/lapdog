@@ -103,7 +103,7 @@ pub fn implement_from_entry(item: proc_macro::TokenStream) -> proc_macro::TokenS
             }
 
             fn attributes() -> Option<impl Iterator<Item = &'static str>> {
-                Some(vec![#(#attribute_names,)*].into_iter())
+                Some([#(#attribute_names,)*].into_iter())
             }
         }
     )
