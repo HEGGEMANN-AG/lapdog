@@ -67,7 +67,7 @@ impl<Stream: LdapStream, B> LdapConnection<Stream, B> {
     pub fn bind_kerberos(
         mut self,
         service_principal: &str,
-    ) -> Result<LdapConnection<Stream, BoundKerberos>, BindKerberosError<Stream::Err>> {
+    ) -> Result<LdapConnection<KerberosEncryptedStream<Stream>, BoundKerberos>, BindKerberosError<Stream::Err>> {
         let (mut ctx, initial_token) = ClientCtx::new(
             InitiateFlags::from_bits_retain(0x2 | 0x4 | 0x8 | 0x10 | 0x20),
             None,
@@ -126,7 +126,7 @@ impl<Stream: LdapStream, B> LdapConnection<Stream, B> {
         mut self,
         mut kerberos_context: ClientCtx,
         last_token: Option<impl std::ops::Deref<Target = [u8]>>,
-    ) -> Result<LdapConnection<Stream, BoundKerberos>, BindKerberosError<Stream::Err>> {
+    ) -> Result<LdapConnection<KerberosEncryptedStream<Stream>, BoundKerberos>, BindKerberosError<Stream::Err>> {
         let BindResponse { server_sasl_creds, .. } =
             self.send_kerberos_token_msg(last_token.as_deref().unwrap_or_default())?;
         let bytes = kerberos_context
@@ -160,7 +160,7 @@ impl<Stream: LdapStream, B> LdapConnection<Stream, B> {
                 diagnostic_message,
                 ..
             } => Ok(LdapConnection {
-                stream: self.stream,
+                stream: KerberosEncryptedStream::new(self.stream, kerberos_context),
                 next_message_id: self.next_message_id,
                 state: BoundKerberos::new(diagnostic_message.0.into_boxed_str()),
             }),
@@ -175,6 +175,54 @@ impl<Stream: LdapStream, B> LdapConnection<Stream, B> {
         }
     }
 }
+
+pub struct KerberosEncryptedStream<S> {
+    stream: S,
+    client_context: ClientCtx,
+    buffer: Vec<u8>,
+}
+impl<S> KerberosEncryptedStream<S> {
+    fn new(stream: S, client_context: ClientCtx) -> Self {
+        Self {
+            stream,
+            client_context,
+            buffer: Vec::new(),
+        }
+    }
+}
+impl<S: Read> Read for KerberosEncryptedStream<S> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if self.buffer.is_empty() {
+            let mut token = vec![0u8; 4096];
+            let len = self.stream.read(&mut token)?;
+            if len == 0 {
+                return Ok(0);
+            }
+
+            let unwrapped = self
+                .client_context
+                .unwrap(&token[..len])
+                .map_err(std::io::Error::other)?;
+            self.buffer.extend_from_slice(&unwrapped);
+        }
+
+        let len = buf.len().min(self.buffer.len());
+        buf[..len].copy_from_slice(&self.buffer[..len]);
+        self.buffer.drain(..len);
+        Ok(len)
+    }
+}
+impl<S: Write> Write for KerberosEncryptedStream<S> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let wrapped = self.client_context.wrap(true, buf).map_err(std::io::Error::other)?;
+        self.stream.write_all(&wrapped)?;
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.stream.flush()
+    }
+}
+
 #[derive(Debug)]
 pub enum BindKerberosError<E = Infallible> {
     InvalidMessage,
