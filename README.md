@@ -9,4 +9,4 @@ Upcoming/Planned features:
 
 So far, all filtering and scoping is redirected towards the dependency library [rasn-ldap](https://crates.io/crates/rasn-ldap)
 
-Maintained by HEGGEMANN AG, a small aerospace company in Germany
+Maintained by HEGGEMANN AG, an aerospace company in Büren, Germany
