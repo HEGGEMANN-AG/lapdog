@@ -46,6 +46,8 @@ where
             filter,
             attributes,
         ));
+        // Technically incrementing is not needed since &mut guarantees sequential message handling, and therefore the client can
+        // guarantee that message IDs would not overlap
         let encoded = rasn::ber::encode(&LdapMessage::new(self.get_and_increase_message_id(), protocol))
             .expect("Failed to encode BER message");
         self.stream.write_all(&encoded)?;
