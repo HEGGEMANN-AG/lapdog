@@ -1,10 +1,11 @@
-use cross_krb5::{ClientCtx, InitiateFlags, K5Ctx, Step};
+use cross_krb5::{ClientCtx, InitiateFlags, K5Ctx, PendingClientCtx, Step};
 use rasn_ldap::{AuthenticationChoice, BindRequest, BindResponse, ProtocolOp, ResultCode, SaslCredentials};
 #[cfg(feature = "rustls")]
 use rustls::ClientConnection;
 use std::{
     convert::Infallible,
     io::{Read, Write},
+    ops::Deref,
 };
 
 use crate::{LdapConnection, MessageError, bind::impl_bound};
@@ -86,14 +87,14 @@ impl<Stream: LdapStream, B> LdapConnection<Stream, B>
 where
     Stream::OutputStream: Read + Write,
 {
-    pub fn bind_kerberos(
-        mut self,
+    pub fn bind_kerberos_with_creds(
+        self,
         service_principal: &str,
+        cred: cross_krb5::Cred,
         max_buffer_size: Option<usize>,
     ) -> Result<LdapConnection<Stream::OutputStream, BoundKerberos>, BindKerberosError<Stream::Err>> {
-        let (mut ctx, initial_token) = ClientCtx::new(
-            InitiateFlags::from_bits_retain(MUTUAL_AUTH | REPLAY_PROT | SEQUENCE | CONFIDENTIALITY | INTEGRITY),
-            None,
+        let (ctx, initial_token) = ClientCtx::new_with_cred(
+            cred,
             service_principal,
             self.stream
                 .channel_bindings()
@@ -102,6 +103,15 @@ where
                 .map(|x| x.as_ref()),
         )
         .map_err(|anyhow_error| BindKerberosError::InitializeSecurityContext(anyhow_error.into_boxed_dyn_error()))?;
+        self.bind_kerberos_with_ctx(ctx, initial_token, max_buffer_size)
+    }
+
+    fn bind_kerberos_with_ctx(
+        mut self,
+        mut ctx: PendingClientCtx,
+        initial_token: impl Deref<Target = [u8]>,
+        max_buffer_size: Option<usize>,
+    ) -> Result<LdapConnection<Stream::OutputStream, BoundKerberos>, BindKerberosError<Stream::Err>> {
         let BindResponse {
             result_code,
             server_sasl_creds,
@@ -134,6 +144,24 @@ where
                 }
             }
         }
+    }
+    pub fn bind_kerberos(
+        self,
+        service_principal: &str,
+        max_buffer_size: Option<usize>,
+    ) -> Result<LdapConnection<Stream::OutputStream, BoundKerberos>, BindKerberosError<Stream::Err>> {
+        let (ctx, initial_token) = ClientCtx::new(
+            InitiateFlags::from_bits_retain(MUTUAL_AUTH | REPLAY_PROT | SEQUENCE | CONFIDENTIALITY | INTEGRITY),
+            None,
+            service_principal,
+            self.stream
+                .channel_bindings()
+                .map_err(BindKerberosError::FailedToGetChannelBindings)?
+                .as_ref()
+                .map(|x| x.as_ref()),
+        )
+        .map_err(|anyhow_error| BindKerberosError::InitializeSecurityContext(anyhow_error.into_boxed_dyn_error()))?;
+        self.bind_kerberos_with_ctx(ctx, initial_token, max_buffer_size)
     }
     fn send_kerberos_token_msg<E>(&mut self, token: &[u8]) -> Result<BindResponse, BindKerberosError<E>> {
         let sasl = SaslCredentials::new("GSSAPI".into(), Some(token.to_vec().into()));
