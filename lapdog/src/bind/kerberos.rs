@@ -41,7 +41,7 @@ impl<S: Read + Write> LdapStream for native_tls::TlsStream<S> {
         self
     }
     fn channel_bindings(&self) -> Result<Option<Vec<u8>>, Self::Err> {
-        self.tls_server_end_point()
+        dbg!(self.tls_server_end_point())
     }
     fn needs_security_layer() -> bool {
         false
@@ -78,11 +78,6 @@ impl<S: Read + Write> LdapStream for rustls::StreamOwned<ClientConnection, S> {
     }
 }
 
-const MUTUAL_AUTH: u32 = 0x2;
-const REPLAY_PROT: u32 = 0x4;
-const SEQUENCE: u32 = 0x8;
-const CONFIDENTIALITY: u32 = 0x10;
-const INTEGRITY: u32 = 0x20;
 impl<Stream: LdapStream, B> LdapConnection<Stream, B>
 where
     Stream::OutputStream: Read + Write,
@@ -156,12 +151,13 @@ where
     }
     pub fn bind_kerberos_encrypt(
         self,
+        own_principal: Option<&str>,
         service_principal: &str,
         max_buffer_size: Option<usize>,
     ) -> Result<LdapConnection<Stream::OutputStream, BoundKerberos>, BindKerberosError<Stream::Err>> {
         let (ctx, initial_token) = ClientCtx::new(
-            InitiateFlags::from_bits_retain(MUTUAL_AUTH | REPLAY_PROT | SEQUENCE | CONFIDENTIALITY | INTEGRITY),
-            None,
+            InitiateFlags::empty(),
+            own_principal,
             service_principal,
             self.stream
                 .channel_bindings()
@@ -217,7 +213,7 @@ where
         // See fallback in ldap3
         let response_packet = (layer_response as u32) << 24 | (negotiated_buffer_size as u32);
         let size_msg = kerberos_context
-            .wrap(Stream::needs_security_layer(), &response_packet.to_be_bytes())
+            .wrap(true, &response_packet.to_be_bytes())
             .map_err(|e| BindKerberosError::FailedToEncryptNegotiationData(e.into_boxed_dyn_error()))?;
         match self.send_kerberos_token_msg(&size_msg)? {
             BindResponse {
