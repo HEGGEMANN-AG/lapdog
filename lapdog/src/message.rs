@@ -4,6 +4,8 @@ use std::{
     num::NonZero,
 };
 
+use tokio::io::AsyncWriteExt;
+
 use crate::{
     ReadExt, WriteExt,
     auth::Authentication,
@@ -16,7 +18,7 @@ use crate::{
     },
 };
 
-pub type RequestMessage = Message<RequestProtocolOp>;
+pub type RequestMessage<'a> = Message<RequestProtocolOp<'a>>;
 pub type ResponseMessage = Message<ResponseProtocolOp>;
 
 #[derive(Debug)]
@@ -62,7 +64,7 @@ impl<PO: ProtocolOp> Message<PO> {
             protocol_op,
         })
     }
-    pub fn write_to<W: Write>(&self, mut w: W) -> std::io::Result<()> {
+    pub fn to_bytes(&self) -> std::io::Result<Vec<u8>> {
         let mut buffer = Vec::new();
         buffer.write_single_byte(UNIVERSAL_SEQUENCE)?;
 
@@ -76,15 +78,21 @@ impl<PO: ProtocolOp> Message<PO> {
         int_b.write_ber_integer(id)?;
 
         write_length(&mut ldap_message, int_b.len())?;
-        ldap_message.write_all(&int_b)?;
+        Write::write_all(&mut ldap_message, &int_b)?;
 
         // Protocol Op
         self.protocol_op.write_into(&mut ldap_message)?;
 
         write_length(&mut buffer, ldap_message.len())?;
-        buffer.write_all(&ldap_message)?;
-
-        w.write_all(&buffer)?;
+        Write::write_all(&mut buffer, &ldap_message)?;
+        Ok(buffer)
+    }
+    pub fn write_to<W: Write>(&self, mut w: W) -> std::io::Result<()> {
+        Write::write_all(&mut w, &self.to_bytes()?)?;
+        Ok(())
+    }
+    pub async fn write_to_async<W: AsyncWriteExt + Unpin>(&self, w: &mut W) -> std::io::Result<()> {
+        w.write_all(&self.to_bytes()?).await?;
         Ok(())
     }
 }
@@ -152,10 +160,10 @@ impl ProtocolOp for ResponseProtocolOp {
 }
 
 #[derive(Clone, Debug)]
-pub enum RequestProtocolOp {
+pub enum RequestProtocolOp<'a> {
     /// Bind-dn usually empty for SASL bind
     Bind {
-        authentication: Authentication,
+        authentication: Authentication<'a>,
     },
     Unbind,
     Search,
@@ -167,7 +175,7 @@ pub enum RequestProtocolOp {
     Abandon,
     Extended,
 }
-impl ProtocolOp for RequestProtocolOp {
+impl ProtocolOp for RequestProtocolOp<'_> {
     fn to_tag(&self) -> u8 {
         match self {
             Self::Bind { .. } => 0,

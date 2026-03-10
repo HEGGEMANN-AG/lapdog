@@ -1,0 +1,124 @@
+use std::{
+    convert::Infallible,
+    pin::Pin,
+    task::{Context, Poll},
+};
+
+#[cfg(feature = "kerberos")]
+use kenobi::channel_bindings::Channel;
+#[cfg(feature = "native-tls")]
+use tokio::io::{ReadHalf, WriteHalf};
+use tokio::{
+    io::{AsyncRead, AsyncWrite},
+    net::{
+        TcpStream,
+        tcp::{OwnedReadHalf, OwnedWriteHalf},
+    },
+};
+
+#[derive(Debug)]
+pub enum StreamWriteHalf {
+    Plain(OwnedWriteHalf),
+    #[cfg(feature = "native-tls")]
+    NativeTls(WriteHalf<tokio_native_tls::TlsStream<TcpStream>>),
+}
+
+impl AsyncWrite for StreamWriteHalf {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        let this = &mut *self;
+        match this {
+            Self::Plain(p) => Pin::new(p).poll_write(cx, buf),
+            #[cfg(feature = "native-tls")]
+            Self::NativeTls(n) => Pin::new(n).poll_write(cx, buf),
+        }
+    }
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        let this = &mut *self;
+        match this {
+            StreamWriteHalf::Plain(owned_write_half) => Pin::new(owned_write_half).poll_flush(cx),
+            #[cfg(feature = "native-tls")]
+            StreamWriteHalf::NativeTls(write_half) => Pin::new(write_half).poll_flush(cx),
+        }
+    }
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        let this = &mut *self;
+        match this {
+            StreamWriteHalf::Plain(owned_write_half) => {
+                Pin::new(owned_write_half).poll_shutdown(cx)
+            }
+            #[cfg(feature = "native-tls")]
+            StreamWriteHalf::NativeTls(write_half) => Pin::new(write_half).poll_shutdown(cx),
+        }
+    }
+}
+#[derive(Debug)]
+pub enum StreamReadHalf {
+    Plain(OwnedReadHalf),
+    #[cfg(feature = "native-tls")]
+    NativeTls(ReadHalf<tokio_native_tls::TlsStream<TcpStream>>),
+}
+impl AsyncRead for StreamReadHalf {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        let this = &mut *self;
+        match this {
+            Self::Plain(p) => Pin::new(p).poll_read(cx, buf),
+            #[cfg(feature = "native-tls")]
+            Self::NativeTls(n) => Pin::new(n).poll_read(cx, buf),
+        }
+    }
+}
+#[derive(Debug)]
+pub enum Stream {
+    Plain(TcpStream),
+    #[cfg(feature = "native-tls")]
+    NativeTls(tokio_native_tls::TlsStream<TcpStream>),
+}
+impl Stream {
+    pub fn split(self) -> (StreamReadHalf, StreamWriteHalf) {
+        match self {
+            Self::Plain(p) => {
+                let (r, w) = p.into_split();
+                (StreamReadHalf::Plain(r), StreamWriteHalf::Plain(w))
+            }
+            #[cfg(feature = "native-tls")]
+            Self::NativeTls(n) => {
+                let (r, w) = tokio::io::split(n);
+                (StreamReadHalf::NativeTls(r), StreamWriteHalf::NativeTls(w))
+            }
+        }
+    }
+    pub fn unsplit(read: StreamReadHalf, write: StreamWriteHalf) -> Self {
+        match (read, write) {
+            (StreamReadHalf::Plain(owned_read_half), StreamWriteHalf::Plain(owned_write_half)) => {
+                Stream::Plain(owned_read_half.reunite(owned_write_half).unwrap())
+            }
+            #[cfg(feature = "native-tls")]
+            (StreamReadHalf::NativeTls(read_half), StreamWriteHalf::NativeTls(write_half)) => {
+                Stream::NativeTls(read_half.unsplit(write_half))
+            }
+            _ => unreachable!(),
+        }
+    }
+}
+#[cfg(feature = "kerberos")]
+impl Channel for Stream {
+    type Error = Infallible;
+    fn channel_bindings(&self) -> Result<Option<Vec<u8>>, Self::Error> {
+        match self {
+            Stream::Plain(_) => Ok(None),
+            #[cfg(feature = "native-tls")]
+            Stream::NativeTls(tls_stream) => {
+                let bindings = tls_stream.get_ref().tls_server_end_point().unwrap();
+                Ok(bindings)
+            }
+        }
+    }
+}

@@ -1,4 +1,12 @@
-use std::io::{Read, Write};
+use std::{
+    collections::HashMap,
+    io::{Read, Write},
+    num::NonZero,
+    sync::{
+        Arc,
+        atomic::{AtomicI32, Ordering},
+    },
+};
 
 mod auth;
 mod bind;
@@ -6,11 +14,140 @@ mod integer;
 mod length;
 mod message;
 mod result;
+mod stream;
 mod tag;
 
 pub use message::{Message, RequestMessage, ResponseProtocolOp};
+use tokio::{
+    io::AsyncReadExt,
+    net::{TcpStream, ToSocketAddrs},
+    sync::{
+        Mutex,
+        oneshot::{Receiver, Sender},
+    },
+};
+
+use crate::{
+    integer::read_integer_body,
+    message::RequestProtocolOp,
+    stream::{Stream, StreamReadHalf, StreamWriteHalf},
+    tag::{PrimitiveOrConstructed, TagClass, is_tag_triple},
+};
 
 const LDAP_VERSION: i32 = 3;
+
+#[derive(Default)]
+pub enum StreamConfig {
+    #[default]
+    Plain,
+    #[cfg(feature = "native-tls")]
+    NativeTls(tokio_native_tls::TlsAcceptor),
+}
+
+type InFlightRequests = HashMap<NonZero<i32>, Sender<(i32, Vec<u8>)>>;
+#[derive(Debug)]
+pub struct LdapConnection {
+    message_id: Arc<AtomicI32>,
+    enforce_signing: bool,
+    // only none while setting up channel bind
+    tcp: Arc<Mutex<Option<StreamWriteHalf>>>,
+    shutdown_sender: Option<Sender<()>>,
+    yoink_read_half: tokio::sync::mpsc::Sender<(Sender<StreamReadHalf>, Receiver<StreamReadHalf>)>,
+    inflight_requests: Arc<Mutex<InFlightRequests>>,
+}
+impl LdapConnection {
+    pub async fn new(addr: impl ToSocketAddrs, config: &StreamConfig) -> Arc<Self> {
+        let stream = TcpStream::connect(addr).await.unwrap();
+        let (possibly_encrypted_read, possibly_encrypted_write) = match config {
+            StreamConfig::Plain => Stream::Plain(stream),
+            #[cfg(feature = "native-tls")]
+            StreamConfig::NativeTls(acc) => {
+                let s = acc.accept(stream).await.unwrap();
+                Stream::NativeTls(s)
+            }
+        }
+        .split();
+        let message_id = Arc::new(AtomicI32::new(1));
+        let (shutdown_sender, shutdown) = tokio::sync::oneshot::channel();
+        let inflight_requests: Arc<Mutex<InFlightRequests>> = Arc::default();
+        let (yoink_read_half, give_read_half) = tokio::sync::mpsc::channel(1);
+        let new = LdapConnection {
+            message_id,
+            enforce_signing: false,
+            tcp: Arc::new(Mutex::new(Some(possibly_encrypted_write))),
+            shutdown_sender: Some(shutdown_sender),
+            yoink_read_half,
+            inflight_requests: inflight_requests.clone(),
+        };
+        let fut = Self::drive(
+            possibly_encrypted_read,
+            inflight_requests,
+            give_read_half,
+            shutdown,
+        );
+        tokio::spawn(fut);
+        Arc::new(new)
+    }
+    async fn send_message(&self, protocol_op: RequestProtocolOp<'_>) -> (i32, Vec<u8>) {
+        let message_id = self.message_id.fetch_add(1, Ordering::Relaxed);
+        let id = NonZero::new(message_id).unwrap();
+        let (sx, rx) = tokio::sync::oneshot::channel();
+        self.inflight_requests.lock().await.insert(id, sx);
+        let mut tcp = self.tcp.lock().await;
+        let msg = RequestMessage {
+            message_id: Some(id),
+            protocol_op,
+        };
+        msg.write_to_async(tcp.as_mut().unwrap()).await.unwrap();
+        rx.await.unwrap()
+    }
+    async fn drive(
+        read_half: StreamReadHalf,
+        inflight_requests: Arc<Mutex<InFlightRequests>>,
+        mut yoink_read_half: tokio::sync::mpsc::Receiver<(
+            Sender<StreamReadHalf>,
+            Receiver<StreamReadHalf>,
+        )>,
+        mut shutdown: Receiver<()>,
+    ) {
+        // only none while setting up channel bind
+        let mut stream_opt = Some(read_half);
+        loop {
+            let (message_id, body) = tokio::select! {
+                _ = &mut shutdown => return,
+                b = stream_opt.as_mut().unwrap().read_message_head() => b.unwrap(),
+                env = yoink_read_half.recv() => {
+                    let Some((return_envelope, return_return_envelope)) = env else {
+                        return;
+                    };
+                    let read_half = stream_opt.take().unwrap();
+                    return_envelope.send(read_half).unwrap();
+                    let Ok(returned_half) = return_return_envelope.await else {
+                        return;
+                    };
+                    let _ = stream_opt.insert(returned_half);
+                    continue;
+                },
+            };
+            let Some(id) = NonZero::new(message_id) else {
+                continue;
+            };
+            let Some(sender) = inflight_requests.lock().await.remove(&id) else {
+                continue;
+            };
+            if let Err(e) = sender.send((message_id, body)) {
+                eprintln!("channel closed: {e:?}");
+            }
+        }
+    }
+}
+impl Drop for LdapConnection {
+    fn drop(&mut self) {
+        if let Some(sender) = self.shutdown_sender.take() {
+            let _ = sender.send(());
+        };
+    }
+}
 
 trait ReadExt: Read {
     fn read_single_byte(&mut self) -> std::io::Result<u8> {
@@ -20,6 +157,63 @@ trait ReadExt: Read {
     }
 }
 impl<R: Read> ReadExt for R {}
+trait AsyncReadLdap: AsyncReadExt + Unpin {
+    async fn read_message_head(&mut self) -> std::io::Result<(i32, Vec<u8>)> {
+        let seq_tag = self.read_u8().await?;
+        if !is_tag_triple(
+            seq_tag,
+            tag::TagClass::Universal,
+            PrimitiveOrConstructed::Constructed,
+            0b00010000,
+        ) {
+            panic!("message is a sequence");
+        }
+        let (seq_length, _) = self.read_length().await.unwrap();
+        let seq_length = seq_length.unwrap();
+        let (int_tag, message_id, int_len) = self.read_integer_unverified().await.unwrap();
+        if !is_tag_triple(
+            int_tag,
+            TagClass::Universal,
+            PrimitiveOrConstructed::Primitive,
+            0x02,
+        ) {
+            panic!("not an integer");
+        }
+
+        let mut buffer = vec![0; seq_length - int_len];
+        self.read_exact(&mut buffer).await.unwrap();
+        Ok((message_id, buffer))
+    }
+    /// Returns logical length of object, and then number of read bytes
+    async fn read_length(&mut self) -> std::io::Result<(Option<usize>, usize)> {
+        let first = self.read_u8().await?;
+        match first {
+            val @ 0..0x80 => Ok((Some(val.into()), 1)),
+            0x80 => Ok((None, 1)),
+            val @ 0x80.. => {
+                let length_bytes = (val & 0x7F) as usize;
+                if length_bytes > size_of::<usize>() {
+                    unimplemented!()
+                }
+                let mut length = [0; size_of::<usize>()];
+                self.read_exact(&mut length[size_of::<usize>() - length_bytes..])
+                    .await?;
+                Ok((Some(usize::from_be_bytes(length)), 1 + length_bytes))
+            }
+        }
+    }
+    async fn read_integer_unverified(&mut self) -> std::io::Result<(u8, i32, usize)> {
+        let int_tag = self.read_u8().await?;
+        let (Some(int_len), len_len) = self.read_length().await? else {
+            panic!("Length undefined");
+        };
+        let mut intbuf = vec![0; int_len];
+        self.read_exact(&mut intbuf).await?;
+        let i = read_integer_body(&intbuf).unwrap();
+        Ok((int_tag, i, 1 + len_len + int_len))
+    }
+}
+impl<A: AsyncReadExt + Unpin> AsyncReadLdap for A {}
 
 trait WriteExt: Write {
     fn write_single_byte(&mut self, b: u8) -> std::io::Result<()> {
@@ -34,86 +228,23 @@ impl<W: Write> WriteExt for W {}
 
 #[cfg(test)]
 mod test {
-    #[test]
-    #[cfg(feature = "native-tls")]
-    fn bind_simple() {
-        use std::{io::Write, net::TcpStream, num::NonZero};
+    #[tokio::test(flavor = "multi_thread")]
+    #[cfg(feature = "kerberos")]
+    async fn bind_kerberos() {
+        use std::sync::Arc;
 
-        use kenobi::{
-            client::{ClientBuilder, StepOut},
-            cred::Credentials,
-        };
+        use kenobi::cred::Credentials;
 
-        use crate::{
-            Message, ResponseProtocolOp,
-            auth::{Authentication, SaslMechanism},
-            message::{RequestMessage, RequestProtocolOp, ResponseMessage},
-        };
-        use native_tls::TlsConnector;
+        use crate::{LdapConnection, StreamConfig};
         let server = std::env::var("LAPDOG_SERVER").unwrap();
         let target_spn = std::env::var("LAPDOG_TARGET_SPN").ok();
-        let tcp = TcpStream::connect(&server).unwrap();
-        let tls_conf = TlsConnector::new().unwrap();
-        let mut tcp = tls_conf
-            .connect(server.split_once(':').unwrap().0, tcp)
-            .unwrap();
-
-        let request_with_token = |message_id: i32, token: Option<&[u8]>| RequestMessage {
-            message_id: NonZero::new(message_id),
-            protocol_op: RequestProtocolOp::Bind {
-                authentication: Authentication::Sasl {
-                    mechanism: SaslMechanism::GssAPI,
-                    credentials: token.map(|t| t.to_vec()),
-                },
-            },
-        };
-        let cred = Credentials::outbound(None).unwrap();
-        let client = ClientBuilder::new_from_credentials(&cred, target_spn.as_deref())
-            .bind_to_channel(&tcp)
+        let own_spn = std::env::var("LAPDOG_OWN_SPN").ok();
+        let cred = Credentials::outbound(own_spn.as_deref()).unwrap();
+        let mut connection = LdapConnection::new(&server, &StreamConfig::default()).await;
+        Arc::get_mut(&mut connection)
             .unwrap()
-            .deny_signing()
-            .initialize();
-        let pending = match client {
-            StepOut::Pending(p) => p,
-            StepOut::Finished(_client_context) => unreachable!(),
-        };
-
-        let credentials = pending.next_token();
-        let prot = request_with_token(1, Some(credentials));
-        prot.write_to(&mut tcp).unwrap();
-        tcp.flush().unwrap();
-
-        let Message {
-            protocol_op:
-                ResponseProtocolOp::Bind {
-                    server_sasl_creds: Some(server_sasl_creds),
-                },
-            ..
-        } = ResponseMessage::read_from(&mut tcp).unwrap()
-        else {
-            panic!("Unexpected message");
-        };
-
-        let client = match pending.step(&server_sasl_creds) {
-            StepOut::Finished(c) => {
-                let second_message = request_with_token(2, c.last_token());
-                second_message.write_to(&mut tcp).unwrap();
-                tcp.flush().unwrap();
-                c
-            }
-            StepOut::Pending(_) => panic!("Still pending!"),
-        };
-
-        let Message {
-            protocol_op: ResponseProtocolOp::Bind { server_sasl_creds },
-            ..
-        } = ResponseMessage::read_from(&mut tcp).unwrap()
-        else {
-            panic!()
-        };
-        let empty_message = request_with_token(3, server_sasl_creds.as_deref());
-        empty_message.write_to(&mut tcp).unwrap();
-        std::thread::sleep(std::time::Duration::from_secs(1));
+            .bind_kerberos(&cred, target_spn.as_deref())
+            .await;
         todo!()
     }
 }
