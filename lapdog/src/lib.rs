@@ -50,8 +50,8 @@ mod test {
             message::{RequestMessage, RequestProtocolOp, ResponseMessage},
         };
         use native_tls::TlsConnector;
-        let server = std::env::var("LAPDOG2_SERVER").unwrap();
-        let target_spn = std::env::var("LAPDOG2_TARGET_SPN").ok();
+        let server = std::env::var("LAPDOG_SERVER").unwrap();
+        let target_spn = std::env::var("LAPDOG_TARGET_SPN").ok();
         let tcp = TcpStream::connect(&server).unwrap();
         let tls_conf = TlsConnector::new().unwrap();
         let mut tcp = tls_conf
