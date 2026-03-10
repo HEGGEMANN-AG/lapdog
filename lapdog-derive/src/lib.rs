@@ -37,20 +37,19 @@ pub fn implement_from_entry(item: proc_macro::TokenStream) -> proc_macro::TokenS
     // If a field has a generic parameter
     let mut generic_bounds = HashMap::<syn::Ident, NeedsBound>::new();
     for field in &fields {
-        if let syn::Type::Path(type_path) = &field.field.ty {
-            if let Some(ident) = type_path.path.get_ident() {
-                if generic_params.contains(ident) {
-                    let this_field = if field.multiple {
-                        NeedsBound::Multiple
-                    } else {
-                        NeedsBound::Octet
-                    };
-                    generic_bounds
-                        .entry(ident.clone())
-                        .and_modify(|x| *x = *x | this_field)
-                        .or_insert(this_field);
-                }
-            }
+        if let syn::Type::Path(type_path) = &field.field.ty
+            && let Some(ident) = type_path.path.get_ident()
+            && generic_params.contains(ident)
+        {
+            let this_field = if field.multiple {
+                NeedsBound::Multiple
+            } else {
+                NeedsBound::Octet
+            };
+            generic_bounds
+                .entry(ident.clone())
+                .and_modify(|x| *x = *x | this_field)
+                .or_insert(this_field);
         }
     }
 
@@ -202,8 +201,13 @@ fn parse_fields(
                 continue 'fields;
             }
         }
-        let attribute_name = replaced_attribute_name
-            .unwrap_or_else(|| field.ident.as_ref().expect("checked as named field").to_string());
+        let attribute_name = replaced_attribute_name.unwrap_or_else(|| {
+            field
+                .ident
+                .as_ref()
+                .expect("checked as named field")
+                .to_string()
+        });
         fields.push(AttributeField {
             attribute_name,
             multiple,
