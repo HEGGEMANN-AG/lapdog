@@ -1,270 +1,112 @@
 use std::io::{Read, Write};
 
-use rasn_ldap::{AuthenticationChoice, BindRequest, BindResponse, LdapString, ProtocolOp, ResultCode};
+const SASL_CREDS: u8 = TagClass::Universal.into_bits() | PrimOrCons::Primitive.into_bit() | 0x7;
+use crate::{
+    LDAP_VERSION, ReadExt, WriteExt,
+    auth::{Authentication, SaslMechanism},
+    integer::{INTEGER_BYTE, read_integer_body},
+    length::{read_length, write_length},
+    result::ResultCode,
+    tag::{OCTET_STRING, PrimitiveOrConstructed as PrimOrCons, TagClass, UNIVERSAL_ENUMERATED, get_tag_number},
+};
 
-use crate::LdapConnection;
+pub fn write_bind(auth: &Authentication) -> std::io::Result<Vec<u8>> {
+    let mut bind_msg = Vec::new();
+    // version
+    bind_msg.write_single_byte(INTEGER_BYTE)?;
+    write_length(&mut bind_msg, 1)?;
+    bind_msg.write_ber_integer(LDAP_VERSION)?;
 
-pub mod error;
-pub use error::{AuthenticatedBindError, SimpleBindError, UnauthenticatedBindError};
-#[cfg(feature = "kerberos")]
-pub mod kerberos;
-#[cfg(feature = "native-tls")]
-pub mod native_tls;
-#[cfg(feature = "rustls")]
-pub mod rustls;
+    // name
+    bind_msg.write_single_byte(TagClass::Universal.into_bits() | PrimOrCons::Primitive.into_bit() | 0x04)?;
+    write_length(&mut bind_msg, 0)?;
 
-/// Allows extraction of the last diagnostics message in a successful bind operation
-pub trait Bound {
-    fn get_bind_diagnostics_message(&self) -> &str;
-}
-macro_rules! impl_bound {
-    ([$($typ:ident),*]) => {
-        $(
-            impl_bound!($typ);
-        )*
+    // authentication
+    let Authentication::Sasl { mechanism, credentials } = auth;
+    bind_msg.write_single_byte(TagClass::ContextSpecific.into_bits() | PrimOrCons::Constructed.into_bit() | 0x3)?;
+    let mut sasl = Vec::new();
+    sasl.write_single_byte(OCTET_STRING)?;
+    let mech = match mechanism {
+        SaslMechanism::GssAPI => "GSSAPI",
     };
-    ($typ:ident) => {
-        /// Typestate of the last successful bind operation on this connection
-        pub struct $typ {
-            bind_diagnostics_message: Box<str>,
-        }
-        impl $typ {
-            pub(crate) fn new(bind_diagnostics_message: Box<str>) -> Self {
-                Self { bind_diagnostics_message }
-            }
-        }
-        impl crate::bind::Bound for $typ {
-            fn get_bind_diagnostics_message(&self) -> &str {
-                &self.bind_diagnostics_message
-            }
-        }
+    write_length(&mut sasl, mech.len())?;
+    sasl.write_all(mech.as_bytes())?;
+    if let Some(cred) = credentials {
+        sasl.write_single_byte(TagClass::Universal.into_bits() | PrimOrCons::Primitive.into_bit() | 0x04)?;
+        write_length(&mut sasl, cred.len())?;
+        sasl.write_all(cred)?;
+    }
+
+    write_length(&mut bind_msg, sasl.len())?;
+    bind_msg.write_all(&sasl)?;
+    Ok(bind_msg)
+}
+
+pub fn read_response<R: Read>(mut r: R) -> std::io::Result<BindResponse> {
+    let tag = r.read_single_byte()?;
+    if tag != UNIVERSAL_ENUMERATED {
+        panic!("Invalid schema")
+    }
+    // LdapResult code
+    let enum_int = {
+        let enum_len = read_length(&mut r)?.unwrap();
+        let mut enum_i = vec![0; enum_len];
+        r.read_exact(&mut enum_i)?;
+        read_integer_body(&enum_i)
+            .unwrap()
+            .try_into()
+            .ok()
+            .and_then(ResultCode::from_code)
+            .unwrap()
     };
-}
-pub(crate) use impl_bound;
-impl_bound!([BoundAnonymously, BoundAuthenticated, BoundUnauthenticated]);
-/// No bind operation has been done on this connection
-pub struct Unbound {
-    pub(crate) _priv: (),
-}
-/// Marker trait for encrypted streams
-/// # Safety
-/// This is just an inconvenience to make the user think about whether a stream is using TLS
-/// or another encryption mechanism
-pub unsafe trait Safe {}
+    let ResultCode::SaslBindInProgress = enum_int else {
+        panic!("weird response code");
+    };
 
-impl<Stream: Read + Write + Safe, OldBindState> LdapConnection<Stream, OldBindState> {
-    /// Binds the connection anonymously, aka without a password or username
-    ///
-    /// For most servers, this leads to limited privileges
-    ///
-    /// For unencrypted streams the "unsafe_" version of this function is available
-    pub fn bind_simple_anonymously(self) -> Result<LdapConnection<Stream, BoundAnonymously>, SimpleBindError> {
-        self.inner_bind_simple_anonymously()
+    let matched_dn_tag = r.read_single_byte()?;
+    if matched_dn_tag != OCTET_STRING {
+        panic!("Invalid matched DN string");
     }
-    /// Binds the connection in the unauthenticated mode.
-    ///
-    /// Default is for servers to reject this, but some may implement privileges for these kinds of connections
-    ///
-    /// An empty username is invalid, use `bind_simple_anonymously` instead
-    ///
-    /// For unencrypted streams the "unsafe_" version of this function is available
-    pub fn bind_simple_unauthenticated(
-        self,
-        name: &str,
-    ) -> Result<LdapConnection<Stream, BoundUnauthenticated>, UnauthenticatedBindError> {
-        self.inner_bind_simple_unauthenticated(name)
-    }
-    /// Binds the connection with simple auth
-    ///
-    /// An empty username or password is invalid, use `bind_simple_anonymously` or `bind_simple_unauthenticated` instead
-    ///
-    /// For unencrypted streams the "unsafe_" version of this function is available
-    pub fn bind_simple_authenticated(
-        self,
-        name: &str,
-        password: &[u8],
-    ) -> Result<LdapConnection<Stream, BoundAuthenticated>, AuthenticatedBindError> {
-        self.inner_bind_simple_authenticated(name, password)
-    }
-}
-impl<Stream: Read + Write, OldBindState> LdapConnection<Stream, OldBindState> {
-    /// Binds the connection anonymously, aka without a password or username
-    ///
-    /// For most servers, this leads to limited privileges
-    ///
-    /// If you call this, you didn't add TLS or any safety mechanism to this stream and the credentials will be potentially exposed
-    #[doc(hidden)]
-    pub fn unsafe_bind_simple_anonymously(self) -> Result<LdapConnection<Stream, BoundAnonymously>, SimpleBindError> {
-        self.inner_bind_simple_anonymously()
-    }
-    /// Binds the connection in the unauthenticated mode.
-    ///
-    /// Default is for servers to reject this, but some may implement privileges for these kinds of connections
-    ///
-    /// An empty username is invalid, use `bind_simple_anonymously` instead.
-    ///
-    /// If you call this, you didn't add TLS or any safety mechanism to this stream and the credentials will be potentially exposed
-    #[doc(hidden)]
-    pub fn unsafe_bind_simple_unauthenticated(
-        self,
-        name: &str,
-    ) -> Result<LdapConnection<Stream, BoundUnauthenticated>, UnauthenticatedBindError> {
-        self.inner_bind_simple_unauthenticated(name)
-    }
-    /// Binds the connection with simple auth
-    ///
-    /// An empty username or password is invalid, use `bind_simple_anonymously` or `bind_simple_unauthenticated` instead
-    ///
-    /// If you call this, you didn't add TLS or any safety mechanism to this stream and the credentials will be potentially exposed
-    #[doc(hidden)]
-    pub fn unsafe_bind_simple_authenticated(
-        self,
-        name: &str,
-        password: &[u8],
-    ) -> Result<LdapConnection<Stream, BoundAuthenticated>, AuthenticatedBindError> {
-        self.inner_bind_simple_authenticated(name, password)
-    }
-}
+    let matched_dn_len = read_length(&mut r)?.unwrap();
+    let mut matched_dn = vec![0; matched_dn_len];
+    r.read_exact(&mut matched_dn)?;
+    let Ok(matched_dn) = String::from_utf8(matched_dn) else {
+        panic!("non-utf8 matched DN")
+    };
 
-// The LDAP standard recommends to implement these different types of bind explicitly, so I'm doing it this way
-impl<Stream: Read + Write, OldBindState> LdapConnection<Stream, OldBindState> {
-    fn inner_bind_simple_anonymously(self) -> Result<LdapConnection<Stream, BoundAnonymously>, SimpleBindError> {
-        self.bind_simple_raw("", &[], BoundAnonymously::new)
+    let diagnostics_tag = r.read_single_byte()?;
+    if diagnostics_tag != OCTET_STRING {
+        panic!("Invalid diagnostics message");
     }
-    fn inner_bind_simple_unauthenticated(
-        self,
-        name: &str,
-    ) -> Result<LdapConnection<Stream, BoundUnauthenticated>, UnauthenticatedBindError> {
-        if name.is_empty() {
-            return Err(UnauthenticatedBindError::EmptyUsername);
-        }
-        self.bind_simple_raw(name, &[], BoundUnauthenticated::new)
-            .map_err(UnauthenticatedBindError::Bind)
-    }
-    fn inner_bind_simple_authenticated(
-        self,
-        name: &str,
-        password: &[u8],
-    ) -> Result<LdapConnection<Stream, BoundAuthenticated>, AuthenticatedBindError> {
-        if password.is_empty() {
-            return Err(AuthenticatedBindError::EmptyPassword);
-        }
-        if name.is_empty() {
-            return Err(AuthenticatedBindError::EmptyUsername);
-        }
-        self.bind_simple_raw(name, password, BoundAuthenticated::new)
-            .map_err(AuthenticatedBindError::Bind)
-    }
-    /// Internal method with name and password
-    ///
-    /// Not exposed externally due to different behaviour depending on bind.
-    /// Takes the connection to guarantee disconnect when the bind should fail.
-    fn bind_simple_raw<BindState>(
-        mut self,
-        name: &str,
-        password: &[u8],
-        bind: impl FnOnce(Box<str>) -> BindState,
-    ) -> Result<LdapConnection<Stream, BindState>, SimpleBindError> {
-        let auth = AuthenticationChoice::Simple(password.into());
-        let (result_code, message, referral) =
-            match self.send_single_message(ProtocolOp::BindRequest(BindRequest::new(3, name.into(), auth)), None)? {
-                ProtocolOp::BindResponse(BindResponse {
-                    server_sasl_creds: Some(_),
-                    ..
-                }) => return Err(SimpleBindError::MalformedResponseIncludedSasl),
-                ProtocolOp::BindResponse(BindResponse {
-                    result_code,
-                    diagnostic_message: LdapString(s),
-                    referral,
-                    ..
-                }) => (result_code, s.into_boxed_str(), referral),
-                _ => return Err(SimpleBindError::MalformedResponseNotBindResponse),
-            };
-        match result_code {
-            ResultCode::Success => Ok(LdapConnection {
-                stream: self.stream,
-                next_message_id: self.next_message_id,
-                state: bind(message),
-            }),
-            ResultCode::Referral => match referral {
-                Some(referrals) => Err(SimpleBindError::Referral { referrals, message }),
-                None => Err(SimpleBindError::ReferralWithoutTarget(message)),
-            },
-            ResultCode::ProtocolError => Err(SimpleBindError::ProtocolError(message)),
-            ResultCode::InvalidCredentials => Err(SimpleBindError::InvalidCredentials(message)),
-            ResultCode::OperationsError => Err(SimpleBindError::OperationsError(message)),
-            ResultCode::Busy | ResultCode::Unavailable => {
-                Err(SimpleBindError::ServerUnavailabe(result_code as u32, message))
+    let diagnostics_len = read_length(&mut r)?.unwrap();
+    let mut diagnostics_message = vec![0; diagnostics_len];
+    r.read_exact(&mut diagnostics_message)?;
+    let diagnostics_message = String::from_utf8_lossy(&diagnostics_message).to_string();
+
+    let referral_or_sasl_tag = r.read_single_byte()?;
+    let sasl_creds = match get_tag_number(referral_or_sasl_tag) {
+        0x3 => panic!("unexpected referral"),
+        SASL_CREDS => {
+            let sasl_len = read_length(&mut r)?.unwrap();
+            if sasl_len == 0 {
+                None
+            } else {
+                let mut sasl_creds = vec![0; sasl_len];
+                r.read_exact(&mut sasl_creds)?;
+                Some(sasl_creds)
             }
-            ResultCode::InvalidDnSyntax => Err(SimpleBindError::InvalidDn(message)),
-            ResultCode::ConfidentialityRequired => Err(SimpleBindError::ConfidentialityRequired(message)),
-            ResultCode::InappropriateAuthentication => Err(SimpleBindError::InappropriateAuthentication(message)),
-            other => Err(SimpleBindError::Other(other as u32, message)),
         }
-    }
+        _ => todo!(),
+    };
+    Ok(BindResponse {
+        sasl_creds,
+        diagnostics_message,
+        matched_dn,
+    })
 }
 
-#[cfg(any(feature = "rustls", feature = "native-tls"))]
-impl<Stream: std::io::Read + std::io::Write + Safe, BindState> LdapConnection<Stream, BindState> {
-    fn internal_sasl_external_bind<NewBoundState>(
-        mut self,
-        auth_z_id: &str,
-        bound_factory: impl FnOnce(Box<str>) -> NewBoundState,
-    ) -> Result<LdapConnection<Stream, NewBoundState>, SaslExternalBindError> {
-        use crate::MessageError;
-
-        let auth = AuthenticationChoice::Sasl(rasn_ldap::SaslCredentials::new("EXTERNAL".into(), None));
-        let message = ProtocolOp::BindRequest(BindRequest::new(3, auth_z_id.into(), auth));
-        let ProtocolOp::BindResponse(BindResponse {
-            result_code,
-            diagnostic_message: LdapString(diagnostic_message),
-            ..
-        }) = self.send_single_message(message, None).map_err(|e| match e {
-            MessageError::Io(io) => SaslExternalBindError::Io(io),
-            MessageError::Message(dec) => SaslExternalBindError::Decode(dec),
-            MessageError::UnsolicitedResponse => SaslExternalBindError::InvalidMessage,
-        })?
-        else {
-            return Err(SaslExternalBindError::InvalidMessage);
-        };
-        match result_code {
-            ResultCode::Success => Ok(LdapConnection {
-                stream: self.stream,
-                next_message_id: self.next_message_id,
-                state: bound_factory(diagnostic_message.into_boxed_str()),
-            }),
-            _ => unimplemented!(),
-        }
-    }
-}
-
-#[derive(Debug)]
-pub enum SaslExternalBindError {
-    Io(std::io::Error),
-    Decode(rasn::ber::de::DecodeError),
-    InvalidMessage,
-}
-impl std::error::Error for SaslExternalBindError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::Decode(dec) => Some(dec),
-            Self::Io(io) => Some(io),
-            Self::InvalidMessage => None,
-        }
-    }
-}
-impl std::fmt::Display for SaslExternalBindError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Decode(d) => write!(f, "Failed to decode message: {d}"),
-            Self::Io(io) => write!(f, "IO error: {io}"),
-            Self::InvalidMessage => write!(f, "server sent an invalid Protocol op or message ID"),
-        }
-    }
-}
-
-impl<Stream: Read + Write, B: Bound> LdapConnection<Stream, B> {
-    pub fn get_bind_diagnostics_message(&self) -> &str {
-        self.state.get_bind_diagnostics_message()
-    }
+pub struct BindResponse {
+    pub sasl_creds: Option<Vec<u8>>,
+    pub diagnostics_message: String,
+    pub matched_dn: String,
 }
