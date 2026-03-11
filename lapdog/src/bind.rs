@@ -109,8 +109,10 @@ impl LdapConnection {
         let Some(token_cleartext): Option<[u8; 4]> = token_cleartext.as_array().copied() else {
             panic!("Server didn't send 4 bytes");
         };
-        let bitmask = token_cleartext[0];
-        eprintln!("Bitmask sent in subsequent challenge: {bitmask:04b}");
+        let Some(bitmask) = BindSecurityOffer::from_bitmask(token_cleartext[0]) else {
+            return Err(BindError::InvalidServerToken);
+        };
+        eprintln!("Bitmask sent in subsequent challenge: {bitmask:?}");
         let mut buffer = [0; 4];
         buffer[1..].copy_from_slice(&token_cleartext[1..4]);
         let buffer_length = u32::from_be_bytes(buffer);
@@ -125,6 +127,19 @@ enum BindSecurityOffer {
     None,
     Signing,
     Encryption,
+}
+impl BindSecurityOffer {
+    fn from_bitmask(b: u8) -> Option<Self> {
+        if b & 0x04 != 0 {
+            Some(Self::Encryption)
+        } else if b & 0x02 != 0 {
+            Some(Self::Signing)
+        } else if b & 0x01 != 0 {
+            Some(Self::None)
+        } else {
+            None
+        }
+    }
 }
 
 #[derive(Debug)]
