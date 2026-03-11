@@ -29,9 +29,6 @@ use crate::{
     },
 };
 
-#[cfg(feature = "kerberos")]
-mod kerberos;
-
 impl LdapConnection {
     #[cfg(feature = "kerberos")]
     pub async fn bind_kerberos(
@@ -39,7 +36,15 @@ impl LdapConnection {
         cred: Credentials<Outbound>,
         spn: Option<&str>,
     ) -> Result<(), BindError> {
-        self.bind_gss(cred, SaslMechanism::GSSAPI, spn).await
+        let mech = SaslMechanism::GSSAPI;
+        if self.is_tls().await {
+            #[cfg(feature = "native-tls")]
+            return self.bind_gss_tls(cred, mech, spn).await;
+            #[cfg(not(feature = "native-tls"))]
+            unreachable!()
+        } else {
+            self.bind_gss(cred, mech, spn).await
+        }
     }
     #[cfg(feature = "kerberos")]
     pub async fn bind_negotiate(
@@ -47,18 +52,23 @@ impl LdapConnection {
         cred: Credentials<Outbound>,
         spn: Option<&str>,
     ) -> Result<(), BindError> {
-        self.bind_gss(cred, SaslMechanism::GSSSPNEGO, spn).await
+        let mech = SaslMechanism::GSSSPNEGO;
+        if self.is_tls().await {
+            #[cfg(feature = "native-tls")]
+            return self.bind_gss_tls(cred, mech, spn).await;
+            #[cfg(not(feature = "native-tls"))]
+            unreachable!()
+        } else {
+            self.bind_gss(cred, mech, spn).await
+        }
     }
-    #[cfg(feature = "kerberos")]
-    /// Technically too strict, as this could also just hold the lock on inflight_requests directly
-    async fn bind_gss(
+    #[cfg(all(feature = "kerberos", feature = "native-tls"))]
+    async fn bind_gss_tls(
         &mut self,
         cred: Credentials<Outbound>,
         mechanism: SaslMechanism,
         spn: Option<&str>,
     ) -> Result<(), BindError> {
-        use std::borrow::Cow;
-
         use kenobi::client::StepOut;
 
         let inflight_requests = self.inflight_requests.lock().await;
@@ -73,28 +83,24 @@ impl LdapConnection {
             .send((return_envelope, return_return_envelope))
             .await
             .unwrap();
-        let (client_builder, is_tls) = {
+        let client_builder = {
             let (mut own_lock, read_half) = tokio::join!(self.tcp.lock(), rec_stream_half);
-            use crate::stream::{Stream, StreamPart};
+            use crate::stream::Stream;
             let write = own_lock.take().unwrap();
-            let is_tls = write.is_tls();
-            let builder = ClientBuilder::new_from_credentials(cred, spn);
-            let client_builder = if is_tls {
-                builder
-            } else {
-                builder.offer_mutual_auth().request_signing().request_encryption()
-            }
-            .request_delegation();
             let stream = Stream::unsplit(read_half.unwrap(), write);
-            let cb = client_builder.bind_to_channel(&stream).unwrap();
+            let client_builder = ClientBuilder::new_from_credentials(cred, spn)
+                .offer_mutual_auth()
+                .request_delegation()
+                .bind_to_channel(&stream)
+                .unwrap();
             let (r, w) = stream.split();
             *own_lock = Some(w);
             if give_back_stream_half.send(r).is_err() {
                 panic!("read half was dropped before we could give it back to the main loop")
             };
-            (cb, is_tls)
+            client_builder
         };
-        let finished_ctx = match client_builder.initialize() {
+        match client_builder.initialize() {
             StepOut::Finished(f) => {
                 println!(
                     "Kerberos mechanism finished without any steps, likely because the credentials were already valid for the server"
@@ -119,7 +125,7 @@ impl LdapConnection {
                     panic!()
                 };
                 dbg!(status, token);
-                kerberos::ValidatedContext::validate(f, is_tls).ok_or(BindError::InvalidSecurityContext)?
+                todo!()
             }
             StepOut::Pending(mut ctx) => loop {
                 use std::borrow::Cow;
@@ -139,21 +145,79 @@ impl LdapConnection {
                 else {
                     panic!("Invalid protocol op")
                 };
-                if status != BindStatus::Finished {
+                if status == BindStatus::Finished {
+                    println!("Server-side authentication finished")
+                }
+                ctx = match ctx.step(&return_token) {
+                    StepOut::Pending(pending_client_context) => pending_client_context,
+                    StepOut::Finished(_) => return Ok(()),
+                }
+            },
+        }
+    }
+
+    #[cfg(feature = "kerberos")]
+    /// Technically too strict, as this could also just hold the lock on inflight_requests directly
+    async fn bind_gss(
+        &mut self,
+        cred: Credentials<Outbound>,
+        mechanism: SaslMechanism,
+        spn: Option<&str>,
+    ) -> Result<(), BindError> {
+        use std::borrow::Cow;
+
+        use kenobi::client::StepOut;
+
+        let inflight_requests = self.inflight_requests.lock().await;
+        if !inflight_requests.is_empty() {
+            panic!("cannot be active requests in flight for bind operations");
+        }
+        drop(inflight_requests);
+        let client_builder = ClientBuilder::new_from_credentials(cred, spn)
+            .offer_mutual_auth()
+            .request_signing()
+            .request_encryption()
+            .request_delegation();
+        let finished_ctx = match client_builder.initialize() {
+            StepOut::Finished(_) => {
+                unreachable!(
+                    "Kerberos mechanism finished without any steps, but we didn't do a GSSAPI bind with TLS, so this shouldn't be possible"
+                )
+            }
+            StepOut::Pending(mut ctx) => loop {
+                use std::borrow::Cow;
+                let (_m, body) = self
+                    .send_message(RequestProtocolOp::Bind {
+                        authentication: Authentication::Sasl {
+                            mechanism,
+                            credentials: Some(Cow::Borrowed(ctx.next_token())),
+                        },
+                    })
+                    .await
+                    .unwrap();
+                let ResponseProtocolOp::Bind {
+                    server_sasl_creds: Some(return_token),
+                    status,
+                } = ResponseProtocolOp::read_from(&mut body.as_slice()).map_err(BindError::Io)?
+                else {
+                    panic!("Invalid protocol op")
+                };
+                if status == BindStatus::Finished {
                     println!("Server-side authentication finished")
                 }
                 ctx = match ctx.step(&return_token) {
                     StepOut::Pending(pending_client_context) => pending_client_context,
                     StepOut::Finished(client_context) => {
-                        let Some(validated) = kerberos::ValidatedContext::validate(client_context, is_tls)
-                        else {
-                            return Err(BindError::InvalidSecurityContext);
-                        };
-                        break validated;
+                        break client_context
+                            .check_signing()
+                            .ok()
+                            .and_then(|c| c.check_encryption().ok())
+                            .ok_or(BindError::InvalidSecurityContext)?;
                     }
                 }
             },
         };
+        println!("Sending empty response");
         let (_, body) = self
             .send_message(RequestProtocolOp::Bind {
                 authentication: Authentication::Sasl {
@@ -170,14 +234,8 @@ impl LdapConnection {
         else {
             panic!()
         };
+        dbg!(status);
         drop(body);
-        let kerberos::ValidatedContext::Kerberos(finished_ctx) = finished_ctx else {
-            if status == BindStatus::Finished {
-                return Ok(());
-            } else {
-                panic!("required last contact but doesn't support TLS double encryption")
-            }
-        };
         let token_cleartext = finished_ctx.unwrap(&token).unwrap();
         let Some(token_cleartext): Option<[u8; 4]> = token_cleartext.as_array().copied() else {
             panic!("Server didn't send 4 bytes");
@@ -190,7 +248,7 @@ impl LdapConnection {
         buffer[1..].copy_from_slice(&token_cleartext[1..4]);
         let buffer_length = u32::from_be_bytes(buffer);
         eprintln!("Buffer length offered: {buffer_length}");
-        buffer[0] = if is_tls { 0x01 } else { 0x4 };
+        buffer[0] = 0x4;
         let wrapped = finished_ctx.sign(&buffer).unwrap();
         let (_id, last_body) = self
             .send_message(RequestProtocolOp::Bind {
