@@ -407,7 +407,7 @@ pub fn read_response<R: Read>(mut r: R) -> std::io::Result<BindResponse> {
     let diagnostics_message = String::from_utf8_lossy(&diagnostics_message).to_string();
     let bind_status = match bind_status {
         Ok(b) => b,
-        Err(code) => panic!("Error returned error: {code:?} (\"{diagnostics_message}\")"),
+        Err(code) => panic!("Server returned error: {code:?} (\"{diagnostics_message}\")"),
     };
 
     let referral_or_sasl_tag = r.read_single_byte()?;
