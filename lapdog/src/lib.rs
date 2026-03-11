@@ -1,6 +1,6 @@
 use std::{
     collections::HashMap,
-    io::{Read, Write},
+    io::{ErrorKind, Read, Write},
     num::NonZero,
     sync::{
         Arc,
@@ -25,7 +25,7 @@ use tokio::{
     io::AsyncReadExt,
     net::{TcpStream, ToSocketAddrs},
     sync::{
-        Mutex,
+        Mutex, mpsc,
         oneshot::{Receiver, Sender},
     },
 };
@@ -66,7 +66,7 @@ pub struct LdapConnection {
     // only none while setting up channel bind
     tcp: Arc<Mutex<Option<StreamWriteHalf>>>,
     shutdown_sender: Option<Sender<()>>,
-    yoink_read_half: tokio::sync::mpsc::Sender<(Sender<StreamReadHalf>, Receiver<StreamReadHalf>)>,
+    yoink_read_half: mpsc::Sender<(Sender<StreamReadHalf>, Receiver<StreamReadHalf>)>,
     inflight_requests: Arc<Mutex<InFlightRequests>>,
 }
 impl LdapConnection {
@@ -116,10 +116,7 @@ impl LdapConnection {
     async fn drive(
         read_half: StreamReadHalf,
         inflight_requests: Arc<Mutex<InFlightRequests>>,
-        mut yoink_read_half: tokio::sync::mpsc::Receiver<(
-            Sender<StreamReadHalf>,
-            Receiver<StreamReadHalf>,
-        )>,
+        mut yoink_read_half: mpsc::Receiver<(Sender<StreamReadHalf>, Receiver<StreamReadHalf>)>,
         mut shutdown: Receiver<()>,
     ) {
         // only none while setting up channel bind
@@ -127,7 +124,11 @@ impl LdapConnection {
         loop {
             let (message_id, body) = tokio::select! {
                 _ = &mut shutdown => return,
-                b = stream_opt.as_mut().unwrap().read_message_head() => b.unwrap(),
+                b = stream_opt.as_mut().unwrap().read_message_head() => match b {
+                    Ok(values) => values,
+                    Err(e) if e.kind() == ErrorKind::ConnectionReset => return,
+                    _e => panic!()
+                },
                 env = yoink_read_half.recv() => {
                     let Some((return_envelope, return_return_envelope)) = env else {
                         return;
@@ -252,8 +253,7 @@ mod test {
         let target_spn = std::env::var("LAPDOG_TARGET_SPN").ok();
         let own_spn = std::env::var("LAPDOG_OWN_SPN").ok();
         let cred = Credentials::outbound(own_spn.as_deref()).unwrap();
-        let mut connection =
-            LdapConnection::new(&(server, LDAP_PORT), &StreamConfig::default()).await;
+        let mut connection = LdapConnection::new(&(server, LDAP_PORT), &StreamConfig::default()).await;
         Arc::get_mut(&mut connection)
             .unwrap()
             .bind_kerberos(&cred, target_spn.as_deref())
