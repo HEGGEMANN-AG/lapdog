@@ -203,16 +203,16 @@ mod test {
     #[tokio::test(flavor = "multi_thread")]
     #[cfg(feature = "kerberos")]
     async fn bind_kerberos() {
-        use kenobi::cred::Credentials;
+        use kenobi::{cred::Credentials, mech::Mechanism};
 
         use crate::{LDAP_PORT, LdapConnection, StreamConfig};
         let server = std::env::var("LAPDOG_SERVER").unwrap();
         let target_spn = std::env::var("LAPDOG_TARGET_SPN").ok();
         let own_spn = std::env::var("LAPDOG_OWN_SPN").ok();
-        let cred = Credentials::outbound(own_spn.as_deref()).unwrap();
+        let cred = Credentials::outbound(own_spn.as_deref(), Mechanism::KerberosV5).unwrap();
         let mut connection = LdapConnection::new(&(server, LDAP_PORT), &StreamConfig::default()).await;
         connection
-            .bind_kerberos(cred.clone(), target_spn.as_deref())
+            .bind_sasl_kenobi(cred.clone(), target_spn.as_deref())
             .await
             .unwrap();
     }
@@ -220,7 +220,7 @@ mod test {
     #[tokio::test(flavor = "multi_thread")]
     #[cfg(all(feature = "kerberos", feature = "native-tls"))]
     async fn bind_kerberos_tls() {
-        use kenobi::cred::Credentials;
+        use kenobi::{cred::Credentials, mech::Mechanism};
         use native_tls::TlsConnector;
 
         use crate::{LDAPS_PORT, LdapConnection, StreamConfig};
@@ -229,7 +229,7 @@ mod test {
         let own_spn = std::env::var("LAPDOG_OWN_SPN").ok();
         let root = std::env::var("LAPDOG_ROOT_CERT").ok();
         let domain = std::env::var("LAPDOG_DOMAIN").unwrap();
-        let cred = Credentials::outbound(own_spn.as_deref()).unwrap();
+        let cred = Credentials::outbound(own_spn.as_deref(), Mechanism::KerberosV5).unwrap();
         let mut connector = TlsConnector::builder();
         if let Some(root) = root {
             let file = std::fs::read(root).unwrap();
@@ -243,7 +243,7 @@ mod test {
         )
         .await;
         connection
-            .bind_negotiate(cred, target_spn.as_deref())
+            .bind_sasl_kenobi(cred, target_spn.as_deref())
             .await
             .unwrap();
     }

@@ -31,28 +31,17 @@ use crate::{
 
 impl LdapConnection {
     #[cfg(feature = "kerberos")]
-    pub async fn bind_kerberos(
+    pub async fn bind_sasl_kenobi(
         &mut self,
         cred: Credentials<Outbound>,
         spn: Option<&str>,
     ) -> Result<(), BindError> {
-        let mech = SaslMechanism::GSSAPI;
-        if self.is_tls().await {
-            #[cfg(feature = "native-tls")]
-            return self.bind_gss_tls(cred, mech, spn).await;
-            #[cfg(not(feature = "native-tls"))]
-            unreachable!()
-        } else {
-            self.bind_gss(cred, mech, spn).await
-        }
-    }
-    #[cfg(feature = "kerberos")]
-    pub async fn bind_negotiate(
-        &mut self,
-        cred: Credentials<Outbound>,
-        spn: Option<&str>,
-    ) -> Result<(), BindError> {
-        let mech = SaslMechanism::GSSSPNEGO;
+        use kenobi::mech::Mechanism;
+
+        let mech = match cred.mechanism() {
+            Mechanism::KerberosV5 => SaslMechanism::GSSAPI,
+            Mechanism::Spnego => SaslMechanism::GSSSPNEGO,
+        };
         if self.is_tls().await {
             #[cfg(feature = "native-tls")]
             return self.bind_gss_tls(cred, mech, spn).await;
