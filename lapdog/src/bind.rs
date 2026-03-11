@@ -1,6 +1,7 @@
 use std::io::{Read, Write};
 
 const SASL_CREDS: u8 = TagClass::Universal.into_bits() | PrimOrCons::Primitive.into_bit() | 0x7;
+#[cfg(feature = "kerberos")]
 use kenobi::{
     client::{ClientBuilder, StepOut},
     cred::{Credentials, Outbound},
@@ -22,7 +23,11 @@ use crate::{
 impl LdapConnection {
     #[cfg(feature = "kerberos")]
     /// Technically too strict, as this could also just hold the lock on inflight_requests directly
-    pub async fn bind_kerberos(&mut self, cred: &Credentials<Outbound>, spn: Option<&str>) {
+    pub async fn bind_kerberos(
+        &mut self,
+        cred: &Credentials<Outbound>,
+        spn: Option<&str>,
+    ) -> Result<(), BindError> {
         let inflight_requests = self.inflight_requests.lock().await;
         if !inflight_requests.is_empty() {
             panic!("cannot be active requests in flight for bind operations");
@@ -63,23 +68,28 @@ impl LdapConnection {
                 .await;
             let ResponseProtocolOp::Bind {
                 server_sasl_creds: Some(return_token),
-            } = ResponseProtocolOp::read_from(&mut body.as_slice()).unwrap()
+                status,
+            } = ResponseProtocolOp::read_from(&mut body.as_slice()).map_err(BindError::Io)?
             else {
                 panic!("Invalid protocol op")
             };
-            ctx = match ctx.step(&return_token) {
-                StepOut::Pending(pending_client_context) => pending_client_context,
-                StepOut::Finished(client_context) => {
-                    let Ok(with_signing) = client_context.check_encryption() else {
-                        panic!("signing not enabled")
-                    };
-                    let Ok(with_encryption) = with_signing.check_signing() else {
-                        panic!("encryption not enabled");
-                    };
-                    break with_encryption;
-                }
+            ctx = match status {
+                BindStatus::Finished => return Ok(()),
+                BindStatus::Pending => match ctx.step(&return_token) {
+                    StepOut::Pending(pending_client_context) => pending_client_context,
+                    StepOut::Finished(client_context) => {
+                        let Ok(with_signing) = client_context.check_encryption() else {
+                            return Err(BindError::InvalidSecurityContext);
+                        };
+                        let Ok(with_encryption) = with_signing.check_signing() else {
+                            return Err(BindError::InvalidSecurityContext);
+                        };
+                        break with_encryption;
+                    }
+                },
             }
         };
+        assert!(finished_ctx.last_token().is_none());
         let (_, body) = self
             .send_message(RequestProtocolOp::Bind {
                 authentication: Authentication::sasl_gss(None),
@@ -87,12 +97,15 @@ impl LdapConnection {
             .await;
         let ResponseProtocolOp::Bind {
             server_sasl_creds: Some(token),
+            status,
         } = ResponseProtocolOp::read_from(&mut body.as_slice()).unwrap()
         else {
             panic!()
         };
+        if status == BindStatus::Finished {
+            return Ok(());
+        }
         let token_cleartext = finished_ctx.unwrap(&token).unwrap();
-        println!("Unwrapped cleartext");
         let Some(token_cleartext): Option<[u8; 4]> = token_cleartext.as_array().copied() else {
             panic!("Server didn't send 4 bytes");
         };
@@ -106,9 +119,20 @@ impl LdapConnection {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+enum BindSecurityOffer {
+    #[default]
+    None,
+    Signing,
+    Encryption,
+}
+
 #[derive(Debug)]
+#[cfg(feature = "kerberos")]
 pub enum BindError {
     Io(std::io::Error),
+    InvalidSecurityContext,
+    InvalidServerToken,
 }
 
 pub fn write_bind(auth: &Authentication) -> std::io::Result<Vec<u8>> {
@@ -169,8 +193,13 @@ pub fn read_response<R: Read>(mut r: R) -> std::io::Result<BindResponse> {
             .and_then(ResultCode::from_code)
             .unwrap()
     };
-    let ResultCode::SaslBindInProgress = enum_int else {
-        panic!("weird response code");
+    let bind_status = match enum_int {
+        ResultCode::Success => Ok(BindStatus::Finished),
+        ResultCode::SaslBindInProgress => Ok(BindStatus::Pending),
+        c => {
+            eprintln!("weird response code: {c:?}");
+            Err(c)
+        }
     };
 
     let matched_dn_tag = r.read_single_byte()?;
@@ -192,6 +221,10 @@ pub fn read_response<R: Read>(mut r: R) -> std::io::Result<BindResponse> {
     let mut diagnostics_message = vec![0; diagnostics_len];
     r.read_exact(&mut diagnostics_message)?;
     let diagnostics_message = String::from_utf8_lossy(&diagnostics_message).to_string();
+    let bind_status = match bind_status {
+        Ok(b) => b,
+        Err(code) => panic!("Error returned error: {code:?} (\"{diagnostics_message}\")"),
+    };
 
     let referral_or_sasl_tag = r.read_single_byte()?;
     let sasl_creds = match get_tag_number(referral_or_sasl_tag) {
@@ -209,13 +242,22 @@ pub fn read_response<R: Read>(mut r: R) -> std::io::Result<BindResponse> {
         _ => todo!(),
     };
     Ok(BindResponse {
+        bind_status,
         sasl_creds,
         diagnostics_message,
         matched_dn,
     })
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum BindStatus {
+    Finished,
+    Pending,
+}
+
+#[derive(Debug)]
 pub struct BindResponse {
+    pub bind_status: BindStatus,
     pub sasl_creds: Option<Vec<u8>>,
     pub diagnostics_message: String,
     pub matched_dn: String,

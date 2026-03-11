@@ -9,7 +9,7 @@ use tokio::io::AsyncWriteExt;
 use crate::{
     ReadExt, WriteExt,
     auth::Authentication,
-    bind,
+    bind::{self, BindStatus},
     integer::{INTEGER_BYTE, read_integer_body},
     length::{read_length, write_length},
     tag::{
@@ -99,7 +99,10 @@ impl<PO: ProtocolOp> Message<PO> {
 
 #[derive(Clone, Debug)]
 pub enum ResponseProtocolOp {
-    Bind { server_sasl_creds: Option<Vec<u8>> },
+    Bind {
+        status: BindStatus,
+        server_sasl_creds: Option<Vec<u8>>,
+    },
     SearchResultEntry,
     SearchResultDone,
     SearchResultReference,
@@ -148,10 +151,14 @@ impl ProtocolOp for ResponseProtocolOp {
         let message_body_reader = r.take(len as u64);
         match tag {
             1 => {
-                let bind::BindResponse { sasl_creds, .. } =
-                    bind::read_response(message_body_reader)?;
+                let bind::BindResponse {
+                    sasl_creds,
+                    bind_status: status,
+                    ..
+                } = bind::read_response(message_body_reader)?;
                 Ok(Self::Bind {
                     server_sasl_creds: sasl_creds,
+                    status,
                 })
             }
             _ => todo!(),

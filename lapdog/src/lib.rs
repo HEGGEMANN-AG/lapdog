@@ -39,19 +39,30 @@ use crate::{
 
 const LDAP_VERSION: i32 = 3;
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub enum StreamConfig {
     #[default]
     Plain,
     #[cfg(feature = "native-tls")]
-    NativeTls(tokio_native_tls::TlsAcceptor),
+    NativeTls {
+        connector: native_tls::TlsConnector,
+        domain: String,
+    },
+}
+impl StreamConfig {
+    pub fn is_tls(&self) -> bool {
+        match self {
+            Self::Plain => false,
+            #[cfg(feature = "native-tls")]
+            Self::NativeTls { .. } => true,
+        }
+    }
 }
 
 type InFlightRequests = HashMap<NonZero<i32>, Sender<(i32, Vec<u8>)>>;
 #[derive(Debug)]
 pub struct LdapConnection {
     message_id: Arc<AtomicI32>,
-    enforce_signing: bool,
     // only none while setting up channel bind
     tcp: Arc<Mutex<Option<StreamWriteHalf>>>,
     shutdown_sender: Option<Sender<()>>,
@@ -64,8 +75,11 @@ impl LdapConnection {
         let (possibly_encrypted_read, possibly_encrypted_write) = match config {
             StreamConfig::Plain => Stream::Plain(stream),
             #[cfg(feature = "native-tls")]
-            StreamConfig::NativeTls(acc) => {
-                let s = acc.accept(stream).await.unwrap();
+            StreamConfig::NativeTls { connector, domain } => {
+                let s = tokio_native_tls::TlsConnector::from(connector.clone())
+                    .connect(domain, stream)
+                    .await
+                    .unwrap();
                 Stream::NativeTls(s)
             }
         }
@@ -76,7 +90,6 @@ impl LdapConnection {
         let (yoink_read_half, give_read_half) = tokio::sync::mpsc::channel(1);
         let new = LdapConnection {
             message_id,
-            enforce_signing: false,
             tcp: Arc::new(Mutex::new(Some(possibly_encrypted_write))),
             shutdown_sender: Some(shutdown_sender),
             yoink_read_half,
@@ -238,16 +251,53 @@ mod test {
 
         use kenobi::cred::Credentials;
 
-        use crate::{LdapConnection, StreamConfig};
+        use crate::{LDAP_PORT, LdapConnection, StreamConfig};
         let server = std::env::var("LAPDOG_SERVER").unwrap();
         let target_spn = std::env::var("LAPDOG_TARGET_SPN").ok();
         let own_spn = std::env::var("LAPDOG_OWN_SPN").ok();
         let cred = Credentials::outbound(own_spn.as_deref()).unwrap();
-        let mut connection = LdapConnection::new(&server, &StreamConfig::default()).await;
+        let mut connection =
+            LdapConnection::new(&(server, LDAP_PORT), &StreamConfig::default()).await;
         Arc::get_mut(&mut connection)
             .unwrap()
             .bind_kerberos(&cred, target_spn.as_deref())
-            .await;
+            .await
+            .unwrap();
+        todo!()
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[cfg(all(feature = "kerberos", feature = "native-tls"))]
+    async fn bind_kerberos_tls() {
+        use std::sync::Arc;
+
+        use kenobi::cred::Credentials;
+        use native_tls::TlsConnector;
+
+        use crate::{LDAPS_PORT, LdapConnection, StreamConfig};
+        let server = std::env::var("LAPDOG_SERVER").unwrap();
+        let target_spn = std::env::var("LAPDOG_TARGET_SPN").ok();
+        let own_spn = std::env::var("LAPDOG_OWN_SPN").ok();
+        let root = std::env::var("LAPDOG_ROOT_CERT").ok();
+        let domain = std::env::var("LAPDOG_DOMAIN").unwrap();
+        let cred = Credentials::outbound(own_spn.as_deref()).unwrap();
+        let mut connector = TlsConnector::builder();
+        if let Some(root) = root {
+            let file = std::fs::read(root).unwrap();
+            let cert = native_tls::Certificate::from_pem(&file).unwrap();
+            connector.add_root_certificate(cert);
+        }
+        let connector = connector.build().unwrap();
+        let mut connection = LdapConnection::new(
+            &(server, LDAPS_PORT),
+            &StreamConfig::NativeTls { connector, domain },
+        )
+        .await;
+        Arc::get_mut(&mut connection)
+            .unwrap()
+            .bind_kerberos(&cred, target_spn.as_deref())
+            .await
+            .unwrap();
         todo!()
     }
 }
