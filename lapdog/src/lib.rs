@@ -68,7 +68,7 @@ pub struct LdapConnection {
     inflight_requests: Arc<Mutex<InFlightRequests>>,
 }
 impl LdapConnection {
-    pub async fn new(addr: impl ToSocketAddrs, config: &StreamConfig) -> Arc<Self> {
+    pub async fn new(addr: impl ToSocketAddrs, config: &StreamConfig) -> Self {
         let stream = TcpStream::connect(addr).await.unwrap();
         let (read, write) = match config {
             StreamConfig::Plain => Stream::Plain(stream),
@@ -96,7 +96,7 @@ impl LdapConnection {
         };
         let fut = Self::drive(read, inflight_requests, give_read_half, shutdown);
         tokio::spawn(fut);
-        Arc::new(new)
+        new
     }
     async fn send_message(
         &self,
@@ -200,8 +200,6 @@ mod test {
     #[tokio::test(flavor = "multi_thread")]
     #[cfg(feature = "kerberos")]
     async fn bind_kerberos() {
-        use std::sync::Arc;
-
         use kenobi::cred::Credentials;
 
         use crate::{LDAP_PORT, LdapConnection, StreamConfig};
@@ -210,13 +208,11 @@ mod test {
         let own_spn = std::env::var("LAPDOG_OWN_SPN").ok();
         let cred = Credentials::outbound(own_spn.as_deref()).unwrap();
         let mut connection = LdapConnection::new(&(server, LDAP_PORT), &StreamConfig::default()).await;
-        Arc::get_mut(&mut connection)
-            .unwrap()
+        connection
             .bind_kerberos(cred.clone(), target_spn.as_deref())
             .await
             .unwrap();
-        Arc::get_mut(&mut connection)
-            .unwrap()
+        connection
             .bind_kerberos(cred, target_spn.as_deref())
             .await
             .unwrap()
@@ -225,8 +221,6 @@ mod test {
     #[tokio::test(flavor = "multi_thread")]
     #[cfg(all(feature = "kerberos", feature = "native-tls"))]
     async fn bind_kerberos_tls() {
-        use std::sync::Arc;
-
         use kenobi::cred::Credentials;
         use native_tls::TlsConnector;
 
@@ -249,8 +243,7 @@ mod test {
             &StreamConfig::NativeTls { connector, domain },
         )
         .await;
-        Arc::get_mut(&mut connection)
-            .unwrap()
+        connection
             .bind_negotiate(cred, target_spn.as_deref())
             .await
             .unwrap();
