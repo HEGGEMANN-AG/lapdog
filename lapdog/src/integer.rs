@@ -7,13 +7,6 @@ use crate::{
 
 pub const INTEGER_BYTE: u8 =
     TagClass::Universal.into_bits() | PrimitiveOrConstructed::Primitive.into_bit() | 0x2;
-#[derive(Clone, Copy, Debug)]
-pub struct MessageId(i32);
-impl MessageId {
-    pub fn new(value: i32) -> Option<Self> {
-        (value > 0).then_some(Self(value))
-    }
-}
 
 /// Does not include type or length
 pub fn read_integer_body(arr: &[u8]) -> Result<i32, InvalidI32> {
