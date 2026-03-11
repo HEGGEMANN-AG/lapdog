@@ -1,11 +1,8 @@
 use std::{
-    convert::Infallible,
     pin::Pin,
     task::{Context, Poll},
 };
 
-#[cfg(feature = "kerberos")]
-use kenobi::channel_bindings::Channel;
 #[cfg(feature = "native-tls")]
 use tokio::io::{ReadHalf, WriteHalf};
 use tokio::{
@@ -117,6 +114,7 @@ impl Stream {
             }
         }
     }
+    #[cfg(feature = "kerberos")]
     pub fn unsplit(read: StreamReadHalf, write: StreamWriteHalf) -> Self {
         match (read, write) {
             (StreamReadHalf::Plain(owned_read_half), StreamWriteHalf::Plain(owned_write_half)) => {
@@ -126,6 +124,7 @@ impl Stream {
             (StreamReadHalf::NativeTls(read_half), StreamWriteHalf::NativeTls(write_half)) => {
                 Stream::NativeTls(read_half.unsplit(write_half))
             }
+            #[cfg(feature = "native-tls")]
             _ => unreachable!(),
         }
     }
@@ -139,16 +138,51 @@ impl StreamPart for Stream {
         }
     }
 }
+
 #[cfg(feature = "kerberos")]
-impl Channel for Stream {
-    type Error = Infallible;
-    fn channel_bindings(&self) -> Result<Option<Vec<u8>>, Self::Error> {
-        match self {
-            Stream::Plain(_) => Ok(None),
-            #[cfg(feature = "native-tls")]
-            Stream::NativeTls(tls_stream) => {
-                let bindings = tls_stream.get_ref().tls_server_end_point().unwrap();
-                Ok(bindings)
+pub mod channel_bindings {
+    use std::fmt::Display;
+
+    use kenobi::channel_bindings::Channel;
+
+    use crate::stream::Stream;
+
+    impl Channel for Stream {
+        type Error = ChannelBindingError;
+        fn channel_bindings(&self) -> Result<Option<Vec<u8>>, Self::Error> {
+            match self {
+                Stream::Plain(_) => Ok(None),
+                #[cfg(feature = "native-tls")]
+                Stream::NativeTls(tls_stream) => tls_stream
+                    .get_ref()
+                    .channel_bindings()
+                    .map_err(ChannelBindingError::Native),
+            }
+        }
+    }
+
+    #[derive(Debug)]
+    pub enum ChannelBindingError {
+        #[cfg(feature = "native-tls")]
+        Native(native_tls::Error),
+    }
+    impl std::error::Error for ChannelBindingError {
+        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+            match self {
+                #[cfg(feature = "native-tls")]
+                Self::Native(e) => Some(e),
+                #[cfg(not(feature = "native-tls"))]
+                _ => todo!(),
+            }
+        }
+    }
+    impl Display for ChannelBindingError {
+        fn fmt(&self, _f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            match self {
+                #[cfg(feature = "native-tls")]
+                Self::Native(n) => n.fmt(_f),
+                #[cfg(not(feature = "native-tls"))]
+                _ => todo!(),
             }
         }
     }
