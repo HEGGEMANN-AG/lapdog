@@ -7,14 +7,14 @@ use std::{
 use tokio::io::AsyncWriteExt;
 
 use crate::{
-    ReadExt, WriteExt,
+    WriteExt,
     auth::Authentication,
     bind::{self, BindStatus},
     integer::{INTEGER_BYTE, read_integer_body},
     length::{read_length, write_length},
+    read::ReadExt,
     tag::{
-        PrimitiveOrConstructed as PrimOrCons, TagClass, UNIVERSAL_SEQUENCE, get_tag_number,
-        is_tag_triple,
+        PrimitiveOrConstructed as PrimOrCons, TagClass, UNIVERSAL_SEQUENCE, get_tag_number, is_tag_triple,
     },
 };
 
@@ -29,12 +29,7 @@ pub struct Message<ProtocolOp> {
 impl<PO: ProtocolOp> Message<PO> {
     pub fn read_from<R: Read>(mut r: R) -> Result<Self, Error> {
         let seq_tag = r.read_single_byte()?;
-        if !is_tag_triple(
-            seq_tag,
-            TagClass::Universal,
-            PrimOrCons::Constructed,
-            0b00010000,
-        ) {
+        if !is_tag_triple(seq_tag, TagClass::Universal, PrimOrCons::Constructed, 0b00010000) {
             return Err(Error::InvalidMessageStructure);
         }
         let Ok(Some(seq_length)) = read_length(&mut r) else {
@@ -42,12 +37,9 @@ impl<PO: ProtocolOp> Message<PO> {
         };
 
         let mut buffer = vec![0; seq_length];
-        r.read_exact(&mut buffer)
-            .map_err(|_| Error::UnexpectedEOF)?;
+        r.read_exact(&mut buffer).map_err(|_| Error::UnexpectedEOF)?;
         let mut buf_reader = buffer.as_slice();
-        let int_tag = buf_reader
-            .read_single_byte()
-            .map_err(|_| Error::UnexpectedEOF)?;
+        let int_tag = buf_reader.read_single_byte().map_err(|_| Error::UnexpectedEOF)?;
         if !is_tag_triple(int_tag, TagClass::Universal, PrimOrCons::Primitive, 0x02) {
             return Err(Error::InvalidMessageStructure);
         }
@@ -201,8 +193,7 @@ impl ProtocolOp for RequestProtocolOp<'_> {
         unimplemented!()
     }
     fn write_into<W: Write>(&self, mut w: W) -> std::io::Result<()> {
-        let req_tag =
-            TagClass::Application.into_bits() | PrimOrCons::Constructed.into_bit() | self.to_tag();
+        let req_tag = TagClass::Application.into_bits() | PrimOrCons::Constructed.into_bit() | self.to_tag();
         w.write_single_byte(req_tag)?;
         let proto_op_inner = match self {
             Self::Bind { authentication } => bind::write_bind(authentication)?,

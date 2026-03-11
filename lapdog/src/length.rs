@@ -1,6 +1,6 @@
 use std::io::{Read, Write};
 
-use crate::{ReadExt, WriteExt};
+use crate::{WriteExt, read::ReadExt};
 
 /// Doesn't accept long-form lengths larger than size_of::<usize>() bytes
 pub fn read_length<R: Read>(mut r: R) -> std::io::Result<Option<usize>> {

@@ -79,38 +79,18 @@ mod test {
     }
     #[test]
     fn bool() {
-        check_tag(
-            0x01,
-            TagClass::Universal,
-            PrimitiveOrConstructed::Primitive,
-            0x01,
-        );
+        check_tag(0x01, TagClass::Universal, PrimitiveOrConstructed::Primitive, 0x01);
     }
     #[test]
     fn integer() {
-        check_tag(
-            0x02,
-            TagClass::Universal,
-            PrimitiveOrConstructed::Primitive,
-            2,
-        );
+        check_tag(0x02, TagClass::Universal, PrimitiveOrConstructed::Primitive, 2);
     }
     #[test]
     fn octet_string() {
-        check_tag(
-            0x04,
-            TagClass::Universal,
-            PrimitiveOrConstructed::Primitive,
-            4,
-        );
+        check_tag(0x04, TagClass::Universal, PrimitiveOrConstructed::Primitive, 4);
     }
     #[test]
     fn null() {
-        check_tag(
-            0x05,
-            TagClass::Universal,
-            PrimitiveOrConstructed::Primitive,
-            5,
-        );
+        check_tag(0x05, TagClass::Universal, PrimitiveOrConstructed::Primitive, 5);
     }
 }

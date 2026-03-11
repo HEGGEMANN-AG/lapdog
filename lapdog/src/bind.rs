@@ -1,4 +1,7 @@
-use std::io::{Read, Write};
+use std::{
+    io::{Read, Write},
+    sync::Arc,
+};
 
 const SASL_CREDS: u8 = TagClass::Universal.into_bits() | PrimOrCons::Primitive.into_bit() | 0x7;
 #[cfg(feature = "kerberos")]
@@ -6,14 +9,21 @@ use kenobi::{
     client::ClientBuilder,
     cred::{Credentials, Outbound},
 };
+use kenobi::{
+    client::ClientContext,
+    typestate::{Encryption, MaybeDelegation, Signing},
+};
+use tokio::sync::{Mutex, mpsc, oneshot};
 
 use crate::{
-    LDAP_VERSION, LdapConnection, ReadExt, ResponseProtocolOp, WriteExt,
+    LDAP_VERSION, LdapConnection, ResponseProtocolOp, WriteExt,
     auth::{Authentication, SaslMechanism},
     integer::{INTEGER_BYTE, read_integer_body},
     length::{read_length, write_length},
     message::{ProtocolOp, RequestProtocolOp},
+    read::ReadExt,
     result::ResultCode,
+    stream::{StreamReadHalf, StreamWriteHalf},
     tag::{
         OCTET_STRING, PrimitiveOrConstructed as PrimOrCons, TagClass, UNIVERSAL_ENUMERATED, get_tag_number,
     },
@@ -26,7 +36,7 @@ impl LdapConnection {
     #[cfg(feature = "kerberos")]
     pub async fn bind_kerberos(
         &mut self,
-        cred: &Credentials<Outbound>,
+        cred: Credentials<Outbound>,
         spn: Option<&str>,
     ) -> Result<(), BindError> {
         self.bind_gss(cred, SaslMechanism::GSSAPI, spn).await
@@ -34,7 +44,7 @@ impl LdapConnection {
     #[cfg(feature = "kerberos")]
     pub async fn bind_negotiate(
         &mut self,
-        cred: &Credentials<Outbound>,
+        cred: Credentials<Outbound>,
         spn: Option<&str>,
     ) -> Result<(), BindError> {
         self.bind_gss(cred, SaslMechanism::GSSSPNEGO, spn).await
@@ -43,7 +53,7 @@ impl LdapConnection {
     /// Technically too strict, as this could also just hold the lock on inflight_requests directly
     async fn bind_gss(
         &mut self,
-        cred: &Credentials<Outbound>,
+        cred: Credentials<Outbound>,
         mechanism: SaslMechanism,
         spn: Option<&str>,
     ) -> Result<(), BindError> {
@@ -66,48 +76,73 @@ impl LdapConnection {
         let (client_builder, is_tls) = {
             let (mut own_lock, read_half) = tokio::join!(self.tcp.lock(), rec_stream_half);
             use crate::stream::{Stream, StreamPart};
-
             let write = own_lock.take().unwrap();
             let is_tls = write.is_tls();
+            let builder = ClientBuilder::new_from_credentials(cred, spn);
             let client_builder = if is_tls {
-                ClientBuilder::new_from_credentials(cred, spn)
+                builder
             } else {
-                ClientBuilder::new_from_credentials(cred, spn)
-                    .request_signing()
-                    .request_encryption()
-            };
+                builder.offer_mutual_auth().request_signing().request_encryption()
+            }
+            .request_delegation();
             let stream = Stream::unsplit(read_half.unwrap(), write);
             let cb = client_builder.bind_to_channel(&stream).unwrap();
             let (r, w) = stream.split();
             *own_lock = Some(w);
-            give_back_stream_half.send(r).unwrap();
+            if give_back_stream_half.send(r).is_err() {
+                panic!("read half was dropped before we could give it back to the main loop")
+            };
             (cb, is_tls)
         };
-        let mut ctx = match client_builder.initialize() {
-            StepOut::Pending(pending_client_context) => pending_client_context,
-            StepOut::Finished(_) => return Ok(()),
-        };
-        let finished_ctx = loop {
-            use std::borrow::Cow;
-
-            let (_m, body) = self
-                .send_message(RequestProtocolOp::Bind {
-                    authentication: Authentication::Sasl {
-                        mechanism,
-                        credentials: Some(Cow::Borrowed(ctx.next_token())),
-                    },
-                })
-                .await;
-            let ResponseProtocolOp::Bind {
-                server_sasl_creds: Some(return_token),
-                status,
-            } = ResponseProtocolOp::read_from(&mut body.as_slice()).map_err(BindError::Io)?
-            else {
-                panic!("Invalid protocol op")
-            };
-            ctx = match status {
-                BindStatus::Finished => return Ok(()),
-                BindStatus::Pending => match ctx.step(&return_token) {
+        let finished_ctx = match client_builder.initialize() {
+            StepOut::Finished(f) => {
+                println!(
+                    "Kerberos mechanism finished without any steps, likely because the credentials were already valid for the server"
+                );
+                let Some(token) = f.last_token() else {
+                    panic!("Kerberos mechanism didn't return a token on the first step, but it should have")
+                };
+                let (_, body) = self
+                    .send_message(RequestProtocolOp::Bind {
+                        authentication: Authentication::Sasl {
+                            mechanism,
+                            credentials: Some(token.into()),
+                        },
+                    })
+                    .await
+                    .unwrap();
+                let ResponseProtocolOp::Bind {
+                    server_sasl_creds: Some(token),
+                    status,
+                } = ResponseProtocolOp::read_from(&mut body.as_slice()).unwrap()
+                else {
+                    panic!()
+                };
+                dbg!(status, token);
+                kerberos::ValidatedContext::validate(f, is_tls).ok_or(BindError::InvalidSecurityContext)?
+            }
+            StepOut::Pending(mut ctx) => loop {
+                use std::borrow::Cow;
+                let (_m, body) = self
+                    .send_message(RequestProtocolOp::Bind {
+                        authentication: Authentication::Sasl {
+                            mechanism,
+                            credentials: Some(Cow::Borrowed(ctx.next_token())),
+                        },
+                    })
+                    .await
+                    .unwrap();
+                let ResponseProtocolOp::Bind {
+                    server_sasl_creds: Some(return_token),
+                    status,
+                } = ResponseProtocolOp::read_from(&mut body.as_slice()).map_err(BindError::Io)?
+                else {
+                    panic!("Invalid protocol op")
+                };
+                if status != BindStatus::Finished {
+                    println!("Server-side authentication finished")
+                }
+                ctx = match ctx.step(&return_token) {
                     StepOut::Pending(pending_client_context) => pending_client_context,
                     StepOut::Finished(client_context) => {
                         let Some(validated) = kerberos::ValidatedContext::validate(client_context, is_tls)
@@ -116,10 +151,9 @@ impl LdapConnection {
                         };
                         break validated;
                     }
-                },
-            }
+                }
+            },
         };
-        assert!(finished_ctx.last_token().is_none());
         let (_, body) = self
             .send_message(RequestProtocolOp::Bind {
                 authentication: Authentication::Sasl {
@@ -127,7 +161,8 @@ impl LdapConnection {
                     credentials: None,
                 },
             })
-            .await;
+            .await
+            .unwrap();
         let ResponseProtocolOp::Bind {
             server_sasl_creds: Some(token),
             status,
@@ -164,7 +199,8 @@ impl LdapConnection {
                     credentials: Some(Cow::Borrowed(wrapped.as_slice())),
                 },
             })
-            .await;
+            .await
+            .unwrap();
         let ResponseProtocolOp::Bind {
             server_sasl_creds,
             status,
@@ -172,9 +208,45 @@ impl LdapConnection {
         else {
             panic!()
         };
-        dbg!(server_sasl_creds, status);
-        todo!()
+        replace_streams_with_kerberos(&mut self.yoink_read_half, &self.tcp, Arc::new(finished_ctx)).await;
+        assert!(
+            server_sasl_creds.is_none(),
+            "Server should not have sent a token in the final step"
+        );
+        if status == BindStatus::Finished {
+            Ok(())
+        } else {
+            panic!("Server should have finished after the final step")
+        }
     }
+}
+
+async fn replace_streams_with_kerberos(
+    yoink_read_half: &mut mpsc::Sender<(oneshot::Sender<StreamReadHalf>, oneshot::Receiver<StreamReadHalf>)>,
+    own_stream: &Mutex<Option<StreamWriteHalf>>,
+    client_ctx: Arc<ClientContext<Outbound, Signing, Encryption, MaybeDelegation>>,
+) {
+    println!("Replacing underlying stream");
+    // take both streams, join them for the channel binding, give them back
+    let (return_envelope, rec_stream_half) = tokio::sync::oneshot::channel();
+    let (give_back_stream_half, return_return_envelope) = tokio::sync::oneshot::channel();
+    yoink_read_half
+        .send((return_envelope, return_return_envelope))
+        .await
+        .unwrap();
+    let (mut own_lock, read_half) = tokio::join!(own_stream.lock(), rec_stream_half);
+    use crate::stream::Stream;
+
+    let write = own_lock.take().unwrap();
+    let mut stream = Stream::unsplit(read_half.unwrap(), write);
+    if let Stream::Plain(tcp) = stream {
+        stream = Stream::Kerberos(client_ctx, tcp)
+    }
+    let (r, w) = stream.split();
+    *own_lock = Some(w);
+    if give_back_stream_half.send(r).is_err() {
+        panic!("read half was dropped before we could give it back to the main loop")
+    };
 }
 
 #[derive(Clone, Copy, Debug, Default)]
