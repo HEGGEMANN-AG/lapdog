@@ -44,17 +44,18 @@ impl LdapConnection {
             .send((return_envelope, return_return_envelope))
             .await
             .unwrap();
-        let client_builder = {
+        let (client_builder, is_tls) = {
             let (mut own_lock, read_half) = tokio::join!(self.tcp.lock(), rec_stream_half);
-            use crate::stream::Stream;
+            use crate::stream::{Stream, StreamPart};
 
             let write = own_lock.take().unwrap();
+            let is_tls = write.is_tls();
             let stream = Stream::unsplit(read_half.unwrap(), write);
             let cb = client_builder.bind_to_channel(&stream).unwrap();
             let (r, w) = stream.split();
             *own_lock = Some(w);
             give_back_stream_half.send(r).unwrap();
-            cb
+            (cb, is_tls)
         };
         let mut ctx = match client_builder.initialize() {
             StepOut::Pending(pending_client_context) => pending_client_context,
@@ -102,6 +103,7 @@ impl LdapConnection {
         else {
             panic!()
         };
+        drop(body);
         if status == BindStatus::Finished {
             return Ok(());
         }
@@ -109,7 +111,7 @@ impl LdapConnection {
         let Some(token_cleartext): Option<[u8; 4]> = token_cleartext.as_array().copied() else {
             panic!("Server didn't send 4 bytes");
         };
-        let Some(bitmask) = BindSecurityOffer::from_bitmask(token_cleartext[0]) else {
+        let Some(bitmask) = BindSecurityOffer::highest_from_bitmask(token_cleartext[0]) else {
             return Err(BindError::InvalidServerToken);
         };
         eprintln!("Bitmask sent in subsequent challenge: {bitmask:?}");
@@ -117,6 +119,21 @@ impl LdapConnection {
         buffer[1..].copy_from_slice(&token_cleartext[1..4]);
         let buffer_length = u32::from_be_bytes(buffer);
         eprintln!("Buffer length offered: {buffer_length}");
+        buffer[0] = if is_tls { 0x01 } else { 0x4 };
+        let wrapped = finished_ctx.sign(&buffer).unwrap();
+        let (_id, last_body) = self
+            .send_message(RequestProtocolOp::Bind {
+                authentication: Authentication::sasl_gss(Some(wrapped.as_slice())),
+            })
+            .await;
+        let ResponseProtocolOp::Bind {
+            server_sasl_creds,
+            status,
+        } = ResponseProtocolOp::read_from(&mut last_body.as_slice()).unwrap()
+        else {
+            panic!()
+        };
+        dbg!(server_sasl_creds, status);
         todo!()
     }
 }
@@ -129,7 +146,7 @@ enum BindSecurityOffer {
     Encryption,
 }
 impl BindSecurityOffer {
-    fn from_bitmask(b: u8) -> Option<Self> {
+    fn highest_from_bitmask(b: u8) -> Option<Self> {
         if b & 0x04 != 0 {
             Some(Self::Encryption)
         } else if b & 0x02 != 0 {
@@ -211,10 +228,7 @@ pub fn read_response<R: Read>(mut r: R) -> std::io::Result<BindResponse> {
     let bind_status = match enum_int {
         ResultCode::Success => Ok(BindStatus::Finished),
         ResultCode::SaslBindInProgress => Ok(BindStatus::Pending),
-        c => {
-            eprintln!("weird response code: {c:?}");
-            Err(c)
-        }
+        c => Err(c),
     };
 
     let matched_dn_tag = r.read_single_byte()?;
