@@ -3,7 +3,7 @@ use std::io::{Read, Write};
 const SASL_CREDS: u8 = TagClass::Universal.into_bits() | PrimOrCons::Primitive.into_bit() | 0x7;
 #[cfg(feature = "kerberos")]
 use kenobi::{
-    client::{ClientBuilder, StepOut},
+    client::ClientBuilder,
     cred::{Credentials, Outbound},
 };
 
@@ -15,28 +15,47 @@ use crate::{
     message::{ProtocolOp, RequestProtocolOp},
     result::ResultCode,
     tag::{
-        OCTET_STRING, PrimitiveOrConstructed as PrimOrCons, TagClass, UNIVERSAL_ENUMERATED,
-        get_tag_number,
+        OCTET_STRING, PrimitiveOrConstructed as PrimOrCons, TagClass, UNIVERSAL_ENUMERATED, get_tag_number,
     },
 };
 
+#[cfg(feature = "kerberos")]
+mod kerberos;
+
 impl LdapConnection {
     #[cfg(feature = "kerberos")]
-    /// Technically too strict, as this could also just hold the lock on inflight_requests directly
     pub async fn bind_kerberos(
         &mut self,
         cred: &Credentials<Outbound>,
         spn: Option<&str>,
     ) -> Result<(), BindError> {
+        self.bind_gss(cred, SaslMechanism::GSSAPI, spn).await
+    }
+    #[cfg(feature = "kerberos")]
+    pub async fn bind_negotiate(
+        &mut self,
+        cred: &Credentials<Outbound>,
+        spn: Option<&str>,
+    ) -> Result<(), BindError> {
+        self.bind_gss(cred, SaslMechanism::GSSSPNEGO, spn).await
+    }
+    #[cfg(feature = "kerberos")]
+    /// Technically too strict, as this could also just hold the lock on inflight_requests directly
+    async fn bind_gss(
+        &mut self,
+        cred: &Credentials<Outbound>,
+        mechanism: SaslMechanism,
+        spn: Option<&str>,
+    ) -> Result<(), BindError> {
+        use std::borrow::Cow;
+
+        use kenobi::client::StepOut;
+
         let inflight_requests = self.inflight_requests.lock().await;
         if !inflight_requests.is_empty() {
             panic!("cannot be active requests in flight for bind operations");
         }
         drop(inflight_requests);
-        let client_builder = ClientBuilder::new_from_credentials(cred, spn)
-            .request_signing()
-            .request_encryption();
-
         // take both streams, join them for the channel binding, give them back
         let (return_envelope, rec_stream_half) = tokio::sync::oneshot::channel();
         let (give_back_stream_half, return_return_envelope) = tokio::sync::oneshot::channel();
@@ -50,6 +69,13 @@ impl LdapConnection {
 
             let write = own_lock.take().unwrap();
             let is_tls = write.is_tls();
+            let client_builder = if is_tls {
+                ClientBuilder::new_from_credentials(cred, spn)
+            } else {
+                ClientBuilder::new_from_credentials(cred, spn)
+                    .request_signing()
+                    .request_encryption()
+            };
             let stream = Stream::unsplit(read_half.unwrap(), write);
             let cb = client_builder.bind_to_channel(&stream).unwrap();
             let (r, w) = stream.split();
@@ -59,12 +85,17 @@ impl LdapConnection {
         };
         let mut ctx = match client_builder.initialize() {
             StepOut::Pending(pending_client_context) => pending_client_context,
-            StepOut::Finished(_) => unreachable!(),
+            StepOut::Finished(_) => return Ok(()),
         };
         let finished_ctx = loop {
+            use std::borrow::Cow;
+
             let (_m, body) = self
                 .send_message(RequestProtocolOp::Bind {
-                    authentication: Authentication::sasl_gss(Some(ctx.next_token())),
+                    authentication: Authentication::Sasl {
+                        mechanism,
+                        credentials: Some(Cow::Borrowed(ctx.next_token())),
+                    },
                 })
                 .await;
             let ResponseProtocolOp::Bind {
@@ -79,13 +110,11 @@ impl LdapConnection {
                 BindStatus::Pending => match ctx.step(&return_token) {
                     StepOut::Pending(pending_client_context) => pending_client_context,
                     StepOut::Finished(client_context) => {
-                        let Ok(with_signing) = client_context.check_encryption() else {
+                        let Some(validated) = kerberos::ValidatedContext::validate(client_context, is_tls)
+                        else {
                             return Err(BindError::InvalidSecurityContext);
                         };
-                        let Ok(with_encryption) = with_signing.check_signing() else {
-                            return Err(BindError::InvalidSecurityContext);
-                        };
-                        break with_encryption;
+                        break validated;
                     }
                 },
             }
@@ -93,7 +122,10 @@ impl LdapConnection {
         assert!(finished_ctx.last_token().is_none());
         let (_, body) = self
             .send_message(RequestProtocolOp::Bind {
-                authentication: Authentication::sasl_gss(None),
+                authentication: Authentication::Sasl {
+                    mechanism,
+                    credentials: None,
+                },
             })
             .await;
         let ResponseProtocolOp::Bind {
@@ -104,9 +136,13 @@ impl LdapConnection {
             panic!()
         };
         drop(body);
-        if status == BindStatus::Finished {
-            return Ok(());
-        }
+        let kerberos::ValidatedContext::Kerberos(finished_ctx) = finished_ctx else {
+            if status == BindStatus::Finished {
+                return Ok(());
+            } else {
+                panic!("required last contact but doesn't support TLS double encryption")
+            }
+        };
         let token_cleartext = finished_ctx.unwrap(&token).unwrap();
         let Some(token_cleartext): Option<[u8; 4]> = token_cleartext.as_array().copied() else {
             panic!("Server didn't send 4 bytes");
@@ -123,7 +159,10 @@ impl LdapConnection {
         let wrapped = finished_ctx.sign(&buffer).unwrap();
         let (_id, last_body) = self
             .send_message(RequestProtocolOp::Bind {
-                authentication: Authentication::sasl_gss(Some(wrapped.as_slice())),
+                authentication: Authentication::Sasl {
+                    mechanism,
+                    credentials: Some(Cow::Borrowed(wrapped.as_slice())),
+                },
             })
             .await;
         let ResponseProtocolOp::Bind {
@@ -175,9 +214,7 @@ pub fn write_bind(auth: &Authentication) -> std::io::Result<Vec<u8>> {
     bind_msg.write_ber_integer(LDAP_VERSION)?;
 
     // name
-    bind_msg.write_single_byte(
-        TagClass::Universal.into_bits() | PrimOrCons::Primitive.into_bit() | 0x04,
-    )?;
+    bind_msg.write_single_byte(TagClass::Universal.into_bits() | PrimOrCons::Primitive.into_bit() | 0x04)?;
     write_length(&mut bind_msg, 0)?;
 
     // authentication
@@ -191,14 +228,13 @@ pub fn write_bind(auth: &Authentication) -> std::io::Result<Vec<u8>> {
     let mut sasl = Vec::new();
     sasl.write_single_byte(OCTET_STRING)?;
     let mech = match mechanism {
-        SaslMechanism::GssAPI => "GSSAPI",
+        SaslMechanism::GSSAPI => "GSSAPI",
+        SaslMechanism::GSSSPNEGO => "GSS-SPNEGO",
     };
     write_length(&mut sasl, mech.len())?;
     sasl.write_all(mech.as_bytes())?;
     if let Some(cred) = credentials {
-        sasl.write_single_byte(
-            TagClass::Universal.into_bits() | PrimOrCons::Primitive.into_bit() | 0x04,
-        )?;
+        sasl.write_single_byte(TagClass::Universal.into_bits() | PrimOrCons::Primitive.into_bit() | 0x04)?;
         write_length(&mut sasl, cred.len())?;
         sasl.write_all(cred)?;
     }

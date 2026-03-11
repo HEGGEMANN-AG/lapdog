@@ -126,17 +126,19 @@ impl LdapConnection {
                 _ = &mut shutdown => return,
                 b = stream_opt.as_mut().unwrap().read_message_head() => match b {
                     Ok(values) => values,
-                    Err(e) if e.kind() == ErrorKind::ConnectionReset => return,
+                    Err(e) if e.kind() == ErrorKind::ConnectionReset =>  {
+                        break;
+                    },
                     _e => panic!()
                 },
                 env = yoink_read_half.recv() => {
                     let Some((return_envelope, return_return_envelope)) = env else {
-                        return;
+                        break;
                     };
                     let read_half = stream_opt.take().unwrap();
                     return_envelope.send(read_half).unwrap();
                     let Ok(returned_half) = return_return_envelope.await else {
-                        return;
+                        break;
                     };
                     let _ = stream_opt.insert(returned_half);
                     continue;
@@ -152,6 +154,7 @@ impl LdapConnection {
                 eprintln!("channel closed: {e:?}");
             }
         }
+        inflight_requests.lock().await.clear();
     }
 }
 impl Drop for LdapConnection {
@@ -256,10 +259,9 @@ mod test {
         let mut connection = LdapConnection::new(&(server, LDAP_PORT), &StreamConfig::default()).await;
         Arc::get_mut(&mut connection)
             .unwrap()
-            .bind_kerberos(&cred, target_spn.as_deref())
+            .bind_negotiate(&cred, target_spn.as_deref())
             .await
             .unwrap();
-        todo!()
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -291,9 +293,8 @@ mod test {
         .await;
         Arc::get_mut(&mut connection)
             .unwrap()
-            .bind_kerberos(&cred, target_spn.as_deref())
+            .bind_negotiate(&cred, target_spn.as_deref())
             .await
             .unwrap();
-        todo!()
     }
 }

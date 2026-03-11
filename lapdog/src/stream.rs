@@ -57,9 +57,7 @@ impl AsyncWrite for StreamWriteHalf {
     fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
         let this = &mut *self;
         match this {
-            StreamWriteHalf::Plain(owned_write_half) => {
-                Pin::new(owned_write_half).poll_shutdown(cx)
-            }
+            StreamWriteHalf::Plain(owned_write_half) => Pin::new(owned_write_half).poll_shutdown(cx),
             #[cfg(feature = "native-tls")]
             StreamWriteHalf::NativeTls(write_half) => Pin::new(write_half).poll_shutdown(cx),
         }
@@ -95,6 +93,7 @@ impl StreamPart for StreamReadHalf {
     }
 }
 #[derive(Debug)]
+#[allow(clippy::large_enum_variant)]
 pub enum Stream {
     Plain(TcpStream),
     #[cfg(feature = "native-tls")]

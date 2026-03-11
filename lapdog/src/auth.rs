@@ -8,15 +8,23 @@ pub enum Authentication<'a> {
     },
 }
 impl Authentication<'_> {
-    pub fn sasl_gss<'t>(token: Option<&'t [u8]>) -> Authentication<'t> {
+    pub fn sasl_kerberos<'t>(token: Option<&'t [u8]>) -> Authentication<'t> {
         Authentication::Sasl {
-            mechanism: SaslMechanism::GssAPI,
+            mechanism: SaslMechanism::GSSAPI,
+            credentials: token.map(Cow::Borrowed),
+        }
+    }
+    pub fn sasl_negotiate<'t>(token: Option<&'t [u8]>) -> Authentication<'t> {
+        Authentication::Sasl {
+            mechanism: SaslMechanism::GSSSPNEGO,
             credentials: token.map(Cow::Borrowed),
         }
     }
 }
 
 #[derive(Clone, Copy, Debug)]
+#[allow(clippy::upper_case_acronyms)]
 pub enum SaslMechanism {
-    GssAPI,
+    GSSAPI,
+    GSSSPNEGO,
 }
