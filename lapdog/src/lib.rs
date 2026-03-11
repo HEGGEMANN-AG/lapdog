@@ -72,7 +72,7 @@ pub struct LdapConnection {
 impl LdapConnection {
     pub async fn new(addr: impl ToSocketAddrs, config: &StreamConfig) -> Arc<Self> {
         let stream = TcpStream::connect(addr).await.unwrap();
-        let (possibly_encrypted_read, possibly_encrypted_write) = match config {
+        let (read, write) = match config {
             StreamConfig::Plain => Stream::Plain(stream),
             #[cfg(feature = "native-tls")]
             StreamConfig::NativeTls { connector, domain } => {
@@ -88,19 +88,15 @@ impl LdapConnection {
         let (shutdown_sender, shutdown) = tokio::sync::oneshot::channel();
         let inflight_requests: Arc<Mutex<InFlightRequests>> = Arc::default();
         let (yoink_read_half, give_read_half) = tokio::sync::mpsc::channel(1);
+        let tcp = Arc::new(Mutex::new(Some(write)));
         let new = LdapConnection {
             message_id,
-            tcp: Arc::new(Mutex::new(Some(possibly_encrypted_write))),
+            tcp,
             shutdown_sender: Some(shutdown_sender),
             yoink_read_half,
             inflight_requests: inflight_requests.clone(),
         };
-        let fut = Self::drive(
-            possibly_encrypted_read,
-            inflight_requests,
-            give_read_half,
-            shutdown,
-        );
+        let fut = Self::drive(read, inflight_requests, give_read_half, shutdown);
         tokio::spawn(fut);
         Arc::new(new)
     }
