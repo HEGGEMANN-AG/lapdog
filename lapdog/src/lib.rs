@@ -17,6 +17,9 @@ mod result;
 mod stream;
 mod tag;
 
+pub const LDAP_PORT: u16 = 389;
+pub const LDAPS_PORT: u16 = 636;
+
 pub use message::{Message, RequestMessage, ResponseProtocolOp};
 use tokio::{
     io::AsyncReadExt,
