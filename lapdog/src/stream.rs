@@ -16,11 +16,24 @@ use tokio::{
     },
 };
 
+pub trait StreamPart {
+    fn is_tls(&self) -> bool;
+}
+
 #[derive(Debug)]
 pub enum StreamWriteHalf {
     Plain(OwnedWriteHalf),
     #[cfg(feature = "native-tls")]
     NativeTls(WriteHalf<tokio_native_tls::TlsStream<TcpStream>>),
+}
+impl StreamPart for StreamWriteHalf {
+    fn is_tls(&self) -> bool {
+        match self {
+            Self::Plain(_) => false,
+            #[cfg(feature = "native-tls")]
+            Self::NativeTls(_) => true,
+        }
+    }
 }
 
 impl AsyncWrite for StreamWriteHalf {
@@ -75,6 +88,15 @@ impl AsyncRead for StreamReadHalf {
         }
     }
 }
+impl StreamPart for StreamReadHalf {
+    fn is_tls(&self) -> bool {
+        match self {
+            Self::Plain(_) => false,
+            #[cfg(feature = "native-tls")]
+            Self::NativeTls(_) => true,
+        }
+    }
+}
 #[derive(Debug)]
 pub enum Stream {
     Plain(TcpStream),
@@ -105,6 +127,15 @@ impl Stream {
                 Stream::NativeTls(read_half.unsplit(write_half))
             }
             _ => unreachable!(),
+        }
+    }
+}
+impl StreamPart for Stream {
+    fn is_tls(&self) -> bool {
+        match self {
+            Self::Plain(_) => false,
+            #[cfg(feature = "native-tls")]
+            Self::NativeTls(_) => true,
         }
     }
 }
