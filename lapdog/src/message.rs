@@ -10,6 +10,7 @@ use crate::{
     WriteExt,
     auth::Authentication,
     bind::{self, BindStatus},
+    compare::{self, ReadCompareError},
     integer::{INTEGER_BYTE, read_integer_body},
     length::{read_length, write_length},
     read::ReadExt,
@@ -57,35 +58,37 @@ impl<PO: ProtocolOp> Message<PO> {
             protocol_op,
         })
     }
-    pub fn to_bytes(&self) -> std::io::Result<Vec<u8>> {
+    pub fn to_bytes(&self) -> Vec<u8> {
         let mut buffer = Vec::new();
-        buffer.write_single_byte(UNIVERSAL_SEQUENCE)?;
+        buffer.push(UNIVERSAL_SEQUENCE);
 
         let mut ldap_message = Vec::new();
 
         // Message ID
-        ldap_message.write_single_byte(INTEGER_BYTE)?;
+        ldap_message.push(INTEGER_BYTE);
 
         let id = self.message_id.map(Into::into).unwrap_or_default();
         let mut int_b = Vec::new();
-        int_b.write_ber_integer(id)?;
+        int_b.write_ber_integer(id).expect("infallible");
 
-        write_length(&mut ldap_message, int_b.len())?;
-        Write::write_all(&mut ldap_message, &int_b)?;
+        write_length(&mut ldap_message, int_b.len()).expect("infallible");
+        ldap_message.extend_from_slice(&int_b);
 
         // Protocol Op
-        self.protocol_op.write_into(&mut ldap_message)?;
+        self.protocol_op
+            .write_into(&mut ldap_message)
+            .expect("infallible");
 
-        write_length(&mut buffer, ldap_message.len())?;
-        Write::write_all(&mut buffer, &ldap_message)?;
-        Ok(buffer)
+        write_length(&mut buffer, ldap_message.len()).expect("infallible");
+        buffer.extend(&ldap_message);
+        buffer
     }
     pub fn write_to<W: Write>(&self, mut w: W) -> std::io::Result<()> {
-        Write::write_all(&mut w, &self.to_bytes()?)?;
+        Write::write_all(&mut w, &self.to_bytes())?;
         Ok(())
     }
     pub async fn write_to_async<W: AsyncWriteExt + Unpin>(&self, w: &mut W) -> std::io::Result<()> {
-        w.write_all(&self.to_bytes()?).await?;
+        w.write_all(&self.to_bytes()).await?;
         Ok(())
     }
 }
@@ -103,7 +106,9 @@ pub enum ResponseProtocolOp {
     Add,
     Delete,
     ModifyDN,
-    Compare,
+    Compare {
+        compare: bool,
+    },
     Extended,
     Intermediate,
 }
@@ -117,7 +122,7 @@ impl ProtocolOp for ResponseProtocolOp {
             Self::Add => 9,
             Self::Delete => 11,
             Self::ModifyDN => 13,
-            Self::Compare => 15,
+            Self::Compare { .. } => 15,
             Self::SearchResultReference => 19,
             Self::Extended => 24,
             Self::Intermediate => 25,
@@ -156,6 +161,10 @@ impl ProtocolOp for ResponseProtocolOp {
                     status,
                 })
             }
+            15 => {
+                let compare = compare::read_response(message_body_reader)?;
+                Ok(Self::Compare { compare })
+            }
             _ => todo!(),
         }
     }
@@ -177,6 +186,15 @@ impl From<bind::ReadBindError> for ReadProtocolOpError {
         }
     }
 }
+impl From<ReadCompareError> for ReadProtocolOpError {
+    fn from(value: ReadCompareError) -> Self {
+        match value {
+            ReadCompareError::Io(error) => Self::Io(error),
+            ReadCompareError::InvalidSchema => Self::InvalidSchema,
+            ReadCompareError::ServerError { code, message } => Self::ProtocolError { code, message },
+        }
+    }
+}
 
 #[derive(Clone, Debug)]
 pub enum RequestProtocolOp<'a> {
@@ -190,7 +208,10 @@ pub enum RequestProtocolOp<'a> {
     Add,
     Delete,
     ModifyDN,
-    Compare,
+    Compare {
+        entry: &'a str,
+        value_assertion: compare::AttributeValueAssertion<'a>,
+    },
     Abandon,
     Extended,
 }
@@ -204,7 +225,7 @@ impl ProtocolOp for RequestProtocolOp<'_> {
             Self::Add => 8,
             Self::Delete => 10,
             Self::ModifyDN => 12,
-            Self::Compare => 14,
+            Self::Compare { .. } => 14,
             Self::Abandon => 16,
             Self::Extended => 23,
         }
@@ -213,10 +234,15 @@ impl ProtocolOp for RequestProtocolOp<'_> {
         unimplemented!()
     }
     fn write_into<W: Write>(&self, mut w: W) -> std::io::Result<()> {
+        // Sequence tag
         let req_tag = TagClass::Application.into_bits() | PrimOrCons::Constructed.into_bit() | self.to_tag();
         w.write_single_byte(req_tag)?;
         let proto_op_inner = match self {
-            Self::Bind { authentication } => bind::write_bind(authentication)?,
+            Self::Bind { authentication } => bind::write_bind(authentication),
+            Self::Compare {
+                entry,
+                value_assertion,
+            } => compare::write_compare(entry, value_assertion),
             _ => todo!(),
         };
         write_length(&mut w, proto_op_inner.len())?;

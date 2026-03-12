@@ -8,7 +8,7 @@ use std::{
 #[cfg(feature = "native-tls")]
 use tokio::io::{ReadHalf, WriteHalf};
 use tokio::{
-    io::{AsyncRead, AsyncReadExt, AsyncWrite},
+    io::{AsyncRead, AsyncReadExt, AsyncWriteExt},
     net::{
         TcpStream,
         tcp::{OwnedReadHalf, OwnedWriteHalf},
@@ -26,55 +26,25 @@ pub enum StreamWriteHalf {
     #[cfg(feature = "kerberos")]
     Kerberos(Arc<MaybeEncryptableClientContext>, OwnedWriteHalf),
 }
-
-impl AsyncWrite for StreamWriteHalf {
-    fn poll_write(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &[u8],
-    ) -> Poll<std::io::Result<usize>> {
-        let this = &mut *self;
-        match this {
-            Self::Plain(p) => Pin::new(p).poll_write(cx, buf),
+impl StreamWriteHalf {
+    pub async fn write_message(&mut self, m: &[u8]) -> Result<(), std::io::Error> {
+        match self {
+            StreamWriteHalf::Plain(owned_write_half) => owned_write_half.write_all(m).await,
             #[cfg(feature = "native-tls")]
-            Self::NativeTls(n) => Pin::new(n).poll_write(cx, buf),
+            StreamWriteHalf::NativeTls(write_half) => write_half.write_all(m).await,
             #[cfg(feature = "kerberos")]
-            Self::Kerberos(client_context, write_half) => {
+            StreamWriteHalf::Kerberos(client_context, write_half) => {
                 let mut write_half = Pin::new(write_half);
-                let client_context = Pin::new(client_context);
-                let encrypt = client_context.wrap_best(buf);
+                let encrypt = Pin::new(client_context).wrap_best(m);
                 let mut buf = vec![0; 4 + encrypt.len()];
                 buf[..4].copy_from_slice(&(encrypt.len() as u32).to_be_bytes());
                 buf[4..].copy_from_slice(&encrypt);
-                match write_half.as_mut().poll_write(cx, encrypt.as_ref()) {
-                    Poll::Ready(Ok(n)) => Poll::Ready(Ok(n)),
-                    Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
-                    Poll::Pending => Poll::Pending,
-                }
+                write_half.write_all(&buf).await
             }
         }
     }
-    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
-        let this = &mut *self;
-        match this {
-            StreamWriteHalf::Plain(owned_write_half) => Pin::new(owned_write_half).poll_flush(cx),
-            #[cfg(feature = "native-tls")]
-            StreamWriteHalf::NativeTls(write_half) => Pin::new(write_half).poll_flush(cx),
-            #[cfg(feature = "kerberos")]
-            StreamWriteHalf::Kerberos(_, write_half) => Pin::new(write_half).poll_flush(cx),
-        }
-    }
-    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
-        let this = &mut *self;
-        match this {
-            StreamWriteHalf::Plain(owned_write_half) => Pin::new(owned_write_half).poll_shutdown(cx),
-            #[cfg(feature = "native-tls")]
-            StreamWriteHalf::NativeTls(write_half) => Pin::new(write_half).poll_shutdown(cx),
-            #[cfg(feature = "kerberos")]
-            StreamWriteHalf::Kerberos(_, write_half) => Pin::new(write_half).poll_shutdown(cx),
-        }
-    }
 }
+
 pub enum StreamReadHalf {
     Plain(OwnedReadHalf),
     #[cfg(feature = "native-tls")]
@@ -91,7 +61,7 @@ impl StreamReadHalf {
             #[cfg(feature = "kerberos")]
             StreamReadHalf::Kerberos(ctx, owned_read_half) => {
                 let size = owned_read_half.read_u32().await.map_err(ReadLdapError::Io)?;
-                let mut buf = vec![0u8; dbg!(size) as usize];
+                let mut buf = vec![0u8; size as usize];
                 owned_read_half
                     .read_exact(&mut buf)
                     .await

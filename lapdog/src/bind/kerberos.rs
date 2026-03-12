@@ -9,7 +9,7 @@ use kenobi::{
 use tokio::sync::{Mutex, mpsc, oneshot};
 
 use crate::{
-    LdapConnection, RequestProtocolOp, ResponseProtocolOp, StreamWriteHalf,
+    LdapConnection, RequestProtocolOp, ResponseProtocolOp, SendMessageError, StreamWriteHalf,
     auth::{Authentication, SaslMechanism},
     bind::BindStatus,
     message::{ProtocolOp, ReadProtocolOpError},
@@ -72,11 +72,15 @@ impl LdapConnection {
         };
         let is_tls = match self.tcp.lock().await.as_ref().unwrap() {
             StreamWriteHalf::Plain(_) => false,
+            #[cfg(feature = "native-tls")]
             StreamWriteHalf::NativeTls(_) => true,
             StreamWriteHalf::Kerberos(_, _) => panic!("Already bound with Kerberos, cannot bind again"),
         };
         if is_tls {
-            self.bind_gss_tls(cred, mech, spn).await
+            #[cfg(feature = "native-tls")]
+            return self.bind_gss_tls(cred, mech, spn).await;
+            #[cfg(not(feature = "native-tls"))]
+            unreachable!()
         } else {
             self.bind_gss(cred, mech, spn).await
         }
@@ -143,8 +147,7 @@ impl LdapConnection {
                             credentials: Some(token.into()),
                         },
                     })
-                    .await
-                    .map_err(|_| BindError::SendOrReceive)?;
+                    .await?;
                 let ResponseProtocolOp::Bind { status, .. } =
                     ResponseProtocolOp::read_from(&mut body.as_slice())?
                 else {
@@ -161,8 +164,7 @@ impl LdapConnection {
                             credentials: Some(Cow::Borrowed(ctx.next_token())),
                         },
                     })
-                    .await
-                    .map_err(|_| BindError::SendOrReceive)?;
+                    .await?;
                 let ResponseProtocolOp::Bind {
                     server_sasl_creds,
                     status,
@@ -226,8 +228,7 @@ impl LdapConnection {
                     credentials: None,
                 },
             })
-            .await
-            .map_err(|_| BindError::SendOrReceive)?;
+            .await?;
         let ResponseProtocolOp::Bind {
             server_sasl_creds, ..
         } = ResponseProtocolOp::read_from(&mut body.as_slice())?
@@ -265,8 +266,7 @@ impl LdapConnection {
                     credentials: Some(Cow::Borrowed(wrapped.as_slice())),
                 },
             })
-            .await
-            .map_err(|_| BindError::SendOrReceive)?;
+            .await?;
         let ResponseProtocolOp::Bind {
             server_sasl_creds,
             status,
@@ -344,6 +344,14 @@ pub enum BindError {
     InvalidSchema,
     InvalidSecurityContext,
     InvalidServerToken,
+}
+impl From<SendMessageError> for BindError {
+    fn from(value: SendMessageError) -> Self {
+        match value {
+            SendMessageError::Io(error) => BindError::Io(error),
+            SendMessageError::ChannelClosed | SendMessageError::ReceiveMessage(_) => Self::SendOrReceive,
+        }
+    }
 }
 impl From<ReadProtocolOpError> for BindError {
     fn from(value: ReadProtocolOpError) -> Self {

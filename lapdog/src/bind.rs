@@ -1,4 +1,4 @@
-use std::io::{Read, Write};
+use std::io::Read;
 
 const SASL_CREDS: u8 = TagClass::Universal.into_bits() | PrimOrCons::Primitive.into_bit() | 0x7;
 
@@ -6,7 +6,7 @@ use crate::{
     LDAP_VERSION, WriteExt,
     auth::{Authentication, SaslMechanism},
     integer::{INTEGER_BYTE, InvalidI32, read_integer_body},
-    length::{read_length, write_length},
+    length::read_length,
     read::ReadExt,
     result::ResultCode,
     tag::{
@@ -17,42 +17,40 @@ use crate::{
 #[cfg(feature = "kerberos")]
 pub mod kerberos;
 
-pub fn write_bind(auth: &Authentication) -> std::io::Result<Vec<u8>> {
+pub fn write_bind(auth: &Authentication) -> Vec<u8> {
     let mut bind_msg = Vec::new();
     // version
-    bind_msg.write_single_byte(INTEGER_BYTE)?;
-    write_length(&mut bind_msg, 1)?;
-    bind_msg.write_ber_integer(LDAP_VERSION)?;
+    bind_msg.push(INTEGER_BYTE);
+    bind_msg.write_ber_length(1).expect("infallible");
+    bind_msg.write_ber_integer(LDAP_VERSION).expect("infallible");
 
     // name
-    bind_msg.write_single_byte(TagClass::Universal.into_bits() | PrimOrCons::Primitive.into_bit() | 0x04)?;
-    write_length(&mut bind_msg, 0)?;
+    bind_msg.push(TagClass::Universal.into_bits() | PrimOrCons::Primitive.into_bit() | 0x04);
+    bind_msg.write_ber_length(0).expect("infallible");
 
     // authentication
     let Authentication::Sasl {
         mechanism,
         credentials,
     } = auth;
-    bind_msg.write_single_byte(
-        TagClass::ContextSpecific.into_bits() | PrimOrCons::Constructed.into_bit() | 0x3,
-    )?;
+    bind_msg.push(TagClass::ContextSpecific.into_bits() | PrimOrCons::Constructed.into_bit() | 0x3);
     let mut sasl = Vec::new();
-    sasl.write_single_byte(OCTET_STRING)?;
+    sasl.push(OCTET_STRING);
     let mech = match mechanism {
         SaslMechanism::GSSAPI => "GSSAPI",
         SaslMechanism::GSSSPNEGO => "GSS-SPNEGO",
     };
-    write_length(&mut sasl, mech.len())?;
-    sasl.write_all(mech.as_bytes())?;
+    sasl.write_ber_length(mech.len()).expect("infallible");
+    sasl.extend(mech.as_bytes());
     if let Some(cred) = credentials {
-        sasl.write_single_byte(TagClass::Universal.into_bits() | PrimOrCons::Primitive.into_bit() | 0x04)?;
-        write_length(&mut sasl, cred.len())?;
-        sasl.write_all(cred)?;
+        sasl.push(TagClass::Universal.into_bits() | PrimOrCons::Primitive.into_bit() | 0x04);
+        sasl.write_ber_length(cred.len()).expect("infallible");
+        sasl.extend_from_slice(cred);
     }
 
-    write_length(&mut bind_msg, sasl.len())?;
-    bind_msg.write_all(&sasl)?;
-    Ok(bind_msg)
+    bind_msg.write_ber_length(sasl.len()).expect("infallible");
+    bind_msg.extend_from_slice(&sasl);
+    bind_msg
 }
 
 pub fn read_response<R: Read>(mut r: R) -> Result<BindResponse, ReadBindError> {

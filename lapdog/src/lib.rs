@@ -10,6 +10,7 @@ use std::{
 
 mod auth;
 mod bind;
+mod compare;
 mod integer;
 mod length;
 mod message;
@@ -106,12 +107,19 @@ impl LdapConnection {
         let id = NonZero::new(message_id).unwrap();
         let (sx, rx) = tokio::sync::oneshot::channel();
         self.inflight_requests.lock().await.insert(id, sx);
-        let mut tcp = self.tcp.lock().await;
-        let msg = RequestMessage {
+        let bytes = RequestMessage {
             message_id: Some(id),
             protocol_op,
-        };
-        msg.write_to_async(tcp.as_mut().unwrap()).await.unwrap();
+        }
+        .to_bytes();
+        self.tcp
+            .lock()
+            .await
+            .as_mut()
+            .unwrap()
+            .write_message(&bytes)
+            .await
+            .map_err(SendMessageError::Io)?;
         match rx.await {
             Ok(Ok(values)) => Ok(values),
             Err(_) => Err(SendMessageError::ChannelClosed),
@@ -175,6 +183,7 @@ impl Drop for LdapConnection {
 }
 #[derive(Debug)]
 enum SendMessageError {
+    Io(std::io::Error),
     ChannelClosed,
     ReceiveMessage(ReceiveMessageError),
 }
@@ -188,6 +197,10 @@ trait WriteExt: Write {
     fn write_single_byte(&mut self, b: u8) -> std::io::Result<()> {
         self.write_all(&[b])
     }
+    fn write_ber_length(&mut self, length: usize) -> std::io::Result<()> {
+        crate::length::write_length(self, length)?;
+        Ok(())
+    }
     fn write_ber_integer(&mut self, i: i32) -> std::io::Result<()> {
         crate::integer::write_integer(i, self)?;
         Ok(())
@@ -196,7 +209,7 @@ trait WriteExt: Write {
 impl<W: Write> WriteExt for W {}
 
 #[cfg(test)]
-mod test {
+pub mod test {
     use kenobi::mech::Mechanism;
 
     #[cfg(feature = "kerberos")]
@@ -257,13 +270,13 @@ mod test {
 
     #[tokio::test(flavor = "multi_thread")]
     #[cfg(all(feature = "kerberos", feature = "native-tls"))]
-    async fn bind_kerberos_tls() {
+    async fn tls_bind_kerberos() {
         test_tls(Mechanism::KerberosV5).await
     }
 
     #[tokio::test(flavor = "multi_thread")]
     #[cfg(all(feature = "kerberos", feature = "native-tls"))]
-    async fn bind_tls_spnego() {
+    async fn tls_bind_spnego() {
         test_tls(Mechanism::Spnego).await
     }
 }
