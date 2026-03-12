@@ -1,14 +1,11 @@
-use std::{
-    ops::Deref,
-    pin::Pin,
-    sync::Arc,
-    task::{Context, Poll},
-};
+#[cfg(feature = "kerberos")]
+use std::collections::VecDeque;
+use std::{pin::Pin, sync::Arc};
 
 #[cfg(feature = "native-tls")]
 use tokio::io::{ReadHalf, WriteHalf};
 use tokio::{
-    io::{AsyncRead, AsyncReadExt, AsyncWriteExt},
+    io::{AsyncReadExt, AsyncWriteExt},
     net::{
         TcpStream,
         tcp::{OwnedReadHalf, OwnedWriteHalf},
@@ -50,7 +47,7 @@ pub enum StreamReadHalf {
     #[cfg(feature = "native-tls")]
     NativeTls(ReadHalf<tokio_native_tls::TlsStream<TcpStream>>),
     #[cfg(feature = "kerberos")]
-    Kerberos(Arc<MaybeEncryptableClientContext>, OwnedReadHalf),
+    Kerberos(Arc<MaybeEncryptableClientContext>, VecDeque<u8>, OwnedReadHalf),
 }
 impl StreamReadHalf {
     pub async fn get_next_message(&mut self) -> Result<(i32, Vec<u8>), ReadLdapError> {
@@ -59,35 +56,20 @@ impl StreamReadHalf {
             #[cfg(feature = "native-tls")]
             StreamReadHalf::NativeTls(read_half) => read_half.read_message_head().await,
             #[cfg(feature = "kerberos")]
-            StreamReadHalf::Kerberos(ctx, owned_read_half) => {
-                let size = owned_read_half.read_u32().await.map_err(ReadLdapError::Io)?;
-                let mut buf = vec![0u8; size as usize];
-                owned_read_half
-                    .read_exact(&mut buf)
-                    .await
-                    .map_err(ReadLdapError::Io)?;
-                let c = ctx.unwrap(&buf).unwrap().to_vec();
-                let mut cleartext_slice = c.deref();
-                ReadLdap::read_message_head(&mut cleartext_slice)
-            }
-        }
-    }
-}
-impl AsyncRead for StreamReadHalf {
-    fn poll_read(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &mut tokio::io::ReadBuf<'_>,
-    ) -> Poll<std::io::Result<()>> {
-        let this = &mut *self;
-        match this {
-            Self::Plain(p) => Pin::new(p).poll_read(cx, buf),
-            #[cfg(feature = "native-tls")]
-            Self::NativeTls(n) => Pin::new(n).poll_read(cx, buf),
-            #[cfg(feature = "kerberos")]
-            Self::Kerberos(_, read_half) => {
-                let mut read_half = Pin::new(read_half);
-                read_half.as_mut().poll_read(cx, buf)
+            StreamReadHalf::Kerberos(ctx, buffer, owned_read_half) => {
+                if buffer.is_empty() {
+                    use std::io::Write;
+
+                    let size = owned_read_half.read_u32().await.map_err(ReadLdapError::Io)?;
+                    let mut buf = vec![0u8; size as usize];
+                    owned_read_half
+                        .read_exact(&mut buf)
+                        .await
+                        .map_err(ReadLdapError::Io)?;
+                    let c = ctx.unwrap(&buf).unwrap().to_vec();
+                    buffer.write_all(&c).unwrap();
+                }
+                ReadLdap::read_message_head(buffer)
             }
         }
     }
@@ -98,7 +80,7 @@ pub enum Stream {
     #[cfg(feature = "native-tls")]
     NativeTls(tokio_native_tls::TlsStream<TcpStream>),
     #[cfg(feature = "kerberos")]
-    Kerberos(Arc<MaybeEncryptableClientContext>, TcpStream),
+    Kerberos(Arc<MaybeEncryptableClientContext>, VecDeque<u8>, TcpStream),
 }
 impl Stream {
     pub fn split(self) -> (StreamReadHalf, StreamWriteHalf) {
@@ -113,10 +95,10 @@ impl Stream {
                 (StreamReadHalf::NativeTls(r), StreamWriteHalf::NativeTls(w))
             }
             #[cfg(feature = "kerberos")]
-            Self::Kerberos(client, tcp) => {
+            Self::Kerberos(client, buf, tcp) => {
                 let (r, w) = tcp.into_split();
                 (
-                    StreamReadHalf::Kerberos(client.clone(), r),
+                    StreamReadHalf::Kerberos(client.clone(), buf, r),
                     StreamWriteHalf::Kerberos(client, w),
                 )
             }
@@ -134,9 +116,9 @@ impl Stream {
             }
             #[cfg(feature = "kerberos")]
             (
-                StreamReadHalf::Kerberos(client, owned_read_half),
+                StreamReadHalf::Kerberos(client, buf, owned_read_half),
                 StreamWriteHalf::Kerberos(_, owned_write_half),
-            ) => Stream::Kerberos(client, owned_read_half.reunite(owned_write_half).unwrap()),
+            ) => Stream::Kerberos(client, buf, owned_read_half.reunite(owned_write_half).unwrap()),
             #[cfg(any(feature = "native-tls", feature = "kerberos"))]
             _ => unreachable!(),
         }
@@ -162,7 +144,7 @@ pub mod channel_bindings {
                     .channel_bindings()
                     .map_err(ChannelBindingError::Native),
                 #[cfg(feature = "kerberos")]
-                Stream::Kerberos(_, _) => Ok(None),
+                Stream::Kerberos(_, _, _) => Ok(None),
             }
         }
     }

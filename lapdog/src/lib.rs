@@ -7,7 +7,12 @@ use std::{
         atomic::{AtomicI32, Ordering},
     },
 };
+use tokio::sync::{
+    mpsc::{UnboundedReceiver as MReceiver, UnboundedSender as MSender},
+    oneshot::{Receiver as OReceiver, Sender as OSender},
+};
 
+mod attribute;
 mod auth;
 mod bind;
 mod compare;
@@ -60,9 +65,27 @@ impl StreamConfig {
     }
 }
 
-enum InFlightRequestHandler {}
+enum InFlightRequestHandler {
+    Single(OSender<Result<Vec<u8>, ReceiveMessageError>>),
+    Multi(
+        MSender<Result<Vec<u8>, ReceiveMessageError>>,
+        Option<OReceiver<()>>,
+    ),
+}
+impl InFlightRequestHandler {
+    fn single() -> (Self, OReceiver<Result<Vec<u8>, ReceiveMessageError>>) {
+        let (sx, rx) = tokio::sync::oneshot::channel();
+        (Self::Single(sx), rx)
+    }
+    #[allow(clippy::type_complexity)]
+    fn multi() -> (Self, MReceiver<Result<Vec<u8>, ReceiveMessageError>>, OSender<()>) {
+        let (sx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let (shutdown_s, shutdown_r) = tokio::sync::oneshot::channel();
+        (Self::Multi(sx, Some(shutdown_r)), rx, shutdown_s)
+    }
+}
 
-type InFlightRequests = HashMap<NonZero<i32>, Sender<Result<Vec<u8>, ReceiveMessageError>>>;
+type InFlightRequests = HashMap<NonZero<i32>, InFlightRequestHandler>;
 pub struct LdapConnection {
     message_id: Arc<AtomicI32>,
     // only none while setting up channel bind
@@ -102,28 +125,46 @@ impl LdapConnection {
         tokio::spawn(fut);
         new
     }
-    async fn send_message(&self, protocol_op: RequestProtocolOp<'_>) -> Result<Vec<u8>, SendMessageError> {
+    async fn send_message(
+        &self,
+        protocol_op: RequestProtocolOp<'_>,
+    ) -> Result<IncomingMessage, SendMessageError> {
         let message_id = self.message_id.fetch_add(1, Ordering::Relaxed);
         let id = NonZero::new(message_id).unwrap();
-        let (sx, rx) = tokio::sync::oneshot::channel();
-        self.inflight_requests.lock().await.insert(id, sx);
+        let is_search = matches!(protocol_op, RequestProtocolOp::Search { .. });
         let bytes = RequestMessage {
             message_id: Some(id),
             protocol_op,
         }
         .to_bytes();
-        self.tcp
-            .lock()
-            .await
-            .as_mut()
-            .unwrap()
-            .write_message(&bytes)
-            .await
-            .map_err(SendMessageError::Io)?;
-        match rx.await {
-            Ok(Ok(values)) => Ok(values),
-            Err(_) => Err(SendMessageError::ChannelClosed),
-            Ok(Err(e)) => Err(SendMessageError::ReceiveMessage(e)),
+        if is_search {
+            let (sx, rx, shutdown) = InFlightRequestHandler::multi();
+            self.inflight_requests.lock().await.insert(id, sx);
+            self.tcp
+                .lock()
+                .await
+                .as_mut()
+                .unwrap()
+                .write_message(&bytes)
+                .await
+                .map_err(SendMessageError::Io)?;
+            Ok(IncomingMessage::MessageReceiver(rx, shutdown))
+        } else {
+            let (sx, rx) = InFlightRequestHandler::single();
+            self.inflight_requests.lock().await.insert(id, sx);
+            self.tcp
+                .lock()
+                .await
+                .as_mut()
+                .unwrap()
+                .write_message(&bytes)
+                .await
+                .map_err(SendMessageError::Io)?;
+            match rx.await {
+                Ok(Ok(values)) => Ok(IncomingMessage::Message(values)),
+                Err(_) => Err(SendMessageError::ChannelClosed),
+                Ok(Err(e)) => Err(SendMessageError::ReceiveMessage(e)),
+            }
         }
     }
     async fn drive(
@@ -137,12 +178,14 @@ impl LdapConnection {
         loop {
             let (message_id, body) = tokio::select! {
                 _ = &mut shutdown => return,
-                b = stream_opt.as_mut().unwrap().get_next_message() => match b {
-                    Ok(values) => values,
-                    Err(ReadLdapError::Io(e)) if e.kind() == ErrorKind::ConnectionReset =>  {
-                        break;
-                    },
-                    e => panic!("error checking message: {e:?}")
+                b = stream_opt.as_mut().unwrap().get_next_message() => {
+                    match b {
+                        Ok(values) => values,
+                        Err(ReadLdapError::Io(e)) if e.kind() == ErrorKind::ConnectionReset =>  {
+                            break;
+                        },
+                        e => panic!("error checking message: {e:?}")
+                    }
                 },
                 env = yoink_read_half.recv() => {
                     let Some((return_envelope, return_return_envelope)) = env else {
@@ -162,15 +205,37 @@ impl LdapConnection {
             let Some(id) = NonZero::new(message_id) else {
                 continue;
             };
-            let Some(sender) = inflight_requests.lock().await.remove(&id) else {
-                continue;
-            };
-            if let Err(e) = sender.send(Ok(body)) {
-                eprintln!("channel closed: {e:?}");
+            let mut inflight_lock = inflight_requests.lock().await;
+            match inflight_lock.remove(&id) {
+                None => continue,
+                Some(InFlightRequestHandler::Single(sender)) => {
+                    if let Err(e) = sender.send(Ok(body)) {
+                        eprintln!("channel closed: {e:?}");
+                    }
+                }
+
+                Some(InFlightRequestHandler::Multi(sender, shutdown)) => {
+                    if sender.send(Ok(body)).is_err() {
+                        continue;
+                    }
+                    if let Some(shutdown) = shutdown {
+                        let ifr = inflight_requests.clone();
+                        tokio::spawn(async move {
+                            let _ = shutdown.await;
+                            ifr.lock().await.remove(&id);
+                        });
+                    }
+                    inflight_lock.insert(id, InFlightRequestHandler::Multi(sender, None));
+                }
             }
         }
-        inflight_requests.lock().await.drain().for_each(|(_, s)| {
-            let _ = s.send(Err(ReceiveMessageError::ConnectionClosed));
+        inflight_requests.lock().await.drain().for_each(|(_, s)| match s {
+            InFlightRequestHandler::Single(sender) => {
+                let _ = sender.send(Err(ReceiveMessageError::ConnectionClosed));
+            }
+            InFlightRequestHandler::Multi(sender, _) => {
+                let _ = sender.send(Err(ReceiveMessageError::ConnectionClosed));
+            }
         });
     }
 }
@@ -181,6 +246,23 @@ impl Drop for LdapConnection {
         };
     }
 }
+enum IncomingMessage {
+    Message(Vec<u8>),
+    MessageReceiver(MReceiver<Result<Vec<u8>, ReceiveMessageError>>, OSender<()>),
+}
+impl IncomingMessage {
+    fn into_message(self) -> Vec<u8> {
+        let Self::Message(vec) = self else { panic!() };
+        vec
+    }
+    fn into_receiver(self) -> (MReceiver<Result<Vec<u8>, ReceiveMessageError>>, OSender<()>) {
+        let Self::MessageReceiver(recv, shutdown) = self else {
+            panic!()
+        };
+        (recv, shutdown)
+    }
+}
+
 #[derive(Debug)]
 enum SendMessageError {
     Io(std::io::Error),
@@ -212,6 +294,11 @@ impl<W: Write> WriteExt for W {}
 pub mod test {
     use kenobi::mech::Mechanism;
 
+    use crate::{
+        LdapConnection,
+        search::{DerefPolicy, Filter, Scope},
+    };
+
     #[cfg(feature = "kerberos")]
     async fn test_no_tls(mech: Mechanism) {
         use kenobi::cred::Credentials;
@@ -226,6 +313,7 @@ pub mod test {
             .bind_sasl_kenobi(cred.clone(), target_spn.as_deref())
             .await
             .unwrap();
+        test_search(&mut connection).await
     }
     #[tokio::test(flavor = "multi_thread")]
     #[cfg(feature = "kerberos")]
@@ -266,6 +354,7 @@ pub mod test {
             .bind_sasl_kenobi(cred, target_spn.as_deref())
             .await
             .unwrap();
+        test_search(&mut connection).await
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -278,5 +367,30 @@ pub mod test {
     #[cfg(all(feature = "kerberos", feature = "native-tls"))]
     async fn tls_bind_spnego() {
         test_tls(Mechanism::Spnego).await
+    }
+
+    async fn test_search(ldap: &mut LdapConnection) {
+        let filter = Filter::Present("userPrincipalName");
+        let attributes = ["userPrincipalName"];
+        let search_base = std::env::var("LAPDOG_TEST_SEARCH_BASE").unwrap();
+        let mut search = ldap
+            .search(
+                &search_base,
+                Scope::WholeSubtree,
+                DerefPolicy::InSearching,
+                filter,
+                attributes,
+            )
+            .await;
+        let mut count = 0;
+        loop {
+            use std::time::Duration;
+
+            match tokio::time::timeout(Duration::from_secs(4), search.next()).await {
+                Ok(Some(_)) => count += 1,
+                Ok(None) | Err(_) => break,
+            };
+        }
+        println!("Server sent {count} entries")
     }
 }

@@ -5,12 +5,13 @@ const SASL_CREDS: u8 = TagClass::Universal.into_bits() | PrimOrCons::Primitive.i
 use crate::{
     LDAP_VERSION, WriteExt,
     auth::{Authentication, SaslMechanism},
-    integer::{INTEGER_BYTE, InvalidI32, read_integer_body},
+    integer::{InvalidI32, read_integer_body},
     length::read_length,
     read::ReadExt,
     result::ResultCode,
     tag::{
-        OCTET_STRING, PrimitiveOrConstructed as PrimOrCons, TagClass, UNIVERSAL_ENUMERATED, get_tag_number,
+        OCTET_STRING, PrimitiveOrConstructed as PrimOrCons, TagClass, UNIVERSAL_ENUMERATED,
+        UNIVERSAL_INTEGER, get_tag_number,
     },
 };
 
@@ -20,7 +21,7 @@ pub mod kerberos;
 pub fn write_bind(auth: &Authentication) -> Vec<u8> {
     let mut bind_msg = Vec::new();
     // version
-    bind_msg.push(INTEGER_BYTE);
+    bind_msg.push(UNIVERSAL_INTEGER);
     bind_msg.write_ber_length(1).expect("infallible");
     bind_msg.write_ber_integer(LDAP_VERSION).expect("infallible");
 

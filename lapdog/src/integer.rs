@@ -1,12 +1,6 @@
 use std::{collections::VecDeque, error::Error, fmt::Display, io::Write};
 
-use crate::{
-    WriteExt,
-    tag::{PrimitiveOrConstructed, TagClass},
-};
-
-pub const INTEGER_BYTE: u8 =
-    TagClass::Universal.into_bits() | PrimitiveOrConstructed::Primitive.into_bit() | 0x2;
+use crate::WriteExt;
 
 /// Does not include type or length
 pub fn read_integer_body(arr: &[u8]) -> Result<i32, InvalidI32> {

@@ -112,10 +112,13 @@ impl LdapConnection {
             let write = own_lock.take().unwrap();
             let stream = Stream::unsplit(read_half.unwrap(), write);
             let client_builder = ClientBuilder::new_from_credentials(cred, spn)
-                .offer_mutual_auth()
-                .request_delegation()
+                .request_mutual_auth()
                 .bind_to_channel(&stream)
                 .unwrap();
+            let client_builder = match mechanism {
+                SaslMechanism::GSSAPI => client_builder.request_delegation(),
+                SaslMechanism::GSSSPNEGO => client_builder,
+            };
             let (r, w) = stream.split();
             *own_lock = Some(w);
             if give_back_stream_half.send(r).is_err() {
@@ -147,7 +150,8 @@ impl LdapConnection {
                             credentials: Some(token.into()),
                         },
                     })
-                    .await?;
+                    .await?
+                    .into_message();
                 let ResponseProtocolOp::Bind { status, .. } =
                     ResponseProtocolOp::read_from(&mut body.as_slice())?
                 else {
@@ -164,7 +168,8 @@ impl LdapConnection {
                             credentials: Some(Cow::Borrowed(ctx.next_token())),
                         },
                     })
-                    .await?;
+                    .await?
+                    .into_message();
                 let ResponseProtocolOp::Bind {
                     server_sasl_creds,
                     status,
@@ -197,7 +202,7 @@ impl LdapConnection {
         }
         drop(inflight_requests);
         let client_builder = ClientBuilder::new_from_credentials(cred, spn)
-            .offer_mutual_auth()
+            .request_mutual_auth()
             .request_signing()
             .request_encryption();
         let client_builder = match mechanism {
@@ -228,7 +233,8 @@ impl LdapConnection {
                     credentials: None,
                 },
             })
-            .await?;
+            .await?
+            .into_message();
         let ResponseProtocolOp::Bind {
             server_sasl_creds, ..
         } = ResponseProtocolOp::read_from(&mut body.as_slice())?
@@ -266,7 +272,8 @@ impl LdapConnection {
                     credentials: Some(Cow::Borrowed(wrapped.as_slice())),
                 },
             })
-            .await?;
+            .await?
+            .into_message();
         let ResponseProtocolOp::Bind {
             server_sasl_creds,
             status,
@@ -304,7 +311,7 @@ async fn replace_streams_with_kerberos(
     let write = own_lock.take().unwrap();
     let mut stream = Stream::unsplit(read_half.unwrap(), write);
     if let Stream::Plain(tcp) = stream {
-        stream = Stream::Kerberos(client_ctx, tcp)
+        stream = Stream::Kerberos(client_ctx, Default::default(), tcp)
     }
     let (r, w) = stream.split();
     *own_lock = Some(w);

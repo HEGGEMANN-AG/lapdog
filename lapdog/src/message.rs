@@ -7,21 +7,22 @@ use std::{
 use tokio::io::AsyncWriteExt;
 
 use crate::{
-    WriteExt,
+    WriteExt, attribute,
     auth::Authentication,
     bind::{self, BindStatus},
     compare::{self, ReadCompareError},
-    integer::{INTEGER_BYTE, read_integer_body},
+    integer::read_integer_body,
     length::{read_length, write_length},
     read::ReadExt,
     result::ResultCode,
+    search::{self, DerefPolicy, Filter, Scope},
     tag::{
-        PrimitiveOrConstructed as PrimOrCons, TagClass, UNIVERSAL_SEQUENCE, get_tag_number, is_tag_triple,
+        PrimitiveOrConstructed as PrimOrCons, TagClass, UNIVERSAL_INTEGER, UNIVERSAL_SEQUENCE,
+        get_tag_number, is_tag_triple,
     },
 };
 
 pub type RequestMessage<'a> = Message<RequestProtocolOp<'a>>;
-pub type ResponseMessage = Message<ResponseProtocolOp>;
 
 #[derive(Debug)]
 pub struct Message<ProtocolOp> {
@@ -65,7 +66,7 @@ impl<PO: ProtocolOp> Message<PO> {
         let mut ldap_message = Vec::new();
 
         // Message ID
-        ldap_message.push(INTEGER_BYTE);
+        ldap_message.push(UNIVERSAL_INTEGER);
 
         let id = self.message_id.map(Into::into).unwrap_or_default();
         let mut int_b = Vec::new();
@@ -203,14 +204,20 @@ pub enum RequestProtocolOp<'a> {
         authentication: Authentication<'a>,
     },
     Unbind,
-    Search,
+    Search {
+        base_object: &'a str,
+        scope: Scope,
+        deref_policy: DerefPolicy,
+        filter: Filter<'a>,
+        attributes: &'a [&'a str],
+    },
     Modify,
     Add,
     Delete,
     ModifyDN,
     Compare {
         entry: &'a str,
-        value_assertion: compare::AttributeValueAssertion<'a>,
+        value_assertion: attribute::AttributeValueAssertion<'a>,
     },
     Abandon,
     Extended,
@@ -220,7 +227,7 @@ impl ProtocolOp for RequestProtocolOp<'_> {
         match self {
             Self::Bind { .. } => 0,
             Self::Unbind => 2,
-            Self::Search => 3,
+            Self::Search { .. } => 3,
             Self::Modify => 6,
             Self::Add => 8,
             Self::Delete => 10,
@@ -243,6 +250,19 @@ impl ProtocolOp for RequestProtocolOp<'_> {
                 entry,
                 value_assertion,
             } => compare::write_compare(entry, value_assertion),
+            Self::Search {
+                base_object,
+                scope,
+                deref_policy,
+                filter,
+                attributes,
+            } => search::write_search(
+                base_object,
+                *scope,
+                *deref_policy,
+                *filter,
+                attributes.iter().copied(),
+            ),
             _ => todo!(),
         };
         write_length(&mut w, proto_op_inner.len())?;

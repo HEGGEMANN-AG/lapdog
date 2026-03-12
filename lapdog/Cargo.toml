@@ -28,4 +28,4 @@ native-tls = ["dep:native-tls", "dep:tokio-native-tls", "kenobi?/native-tls"]
 kerberos = ["dep:kenobi"]
 
 [dev-dependencies]
-tokio = { version = "1.50.0", features = ["rt-multi-thread"] }
+tokio = { version = "1.50.0", features = ["rt-multi-thread", "time"] }

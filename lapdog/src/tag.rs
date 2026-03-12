@@ -1,5 +1,11 @@
+pub const UNIVERSAL_BOOLEAN: u8 =
+    TagClass::Universal.into_bits() | PrimitiveOrConstructed::Primitive.into_bit() | 0x1;
+pub const UNIVERSAL_INTEGER: u8 =
+    TagClass::Universal.into_bits() | PrimitiveOrConstructed::Primitive.into_bit() | 0x2;
 pub const UNIVERSAL_SEQUENCE: u8 =
     TagClass::Universal.into_bits() | PrimitiveOrConstructed::Constructed.into_bit() | 0x10;
+pub const UNIVERSAL_SET: u8 =
+    TagClass::Universal.into_bits() | PrimitiveOrConstructed::Constructed.into_bit() | 0x11;
 pub const UNIVERSAL_ENUMERATED: u8 =
     TagClass::Universal.into_bits() | PrimitiveOrConstructed::Primitive.into_bit() | 0x0a;
 pub const OCTET_STRING: u8 =

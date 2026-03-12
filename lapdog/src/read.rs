@@ -4,7 +4,7 @@ use tokio::io::AsyncReadExt;
 
 use crate::{
     integer::read_integer_body,
-    tag::{PrimitiveOrConstructed, TagClass, is_tag_triple},
+    tag::{UNIVERSAL_INTEGER, UNIVERSAL_SEQUENCE},
 };
 
 pub(crate) trait ReadExt: Read {
@@ -18,24 +18,12 @@ impl<R: Read> ReadExt for R {}
 
 pub(crate) trait ReadLdap: ReadExt {
     fn read_message_head(&mut self) -> Result<(i32, Vec<u8>), ReadLdapError> {
-        let seq_tag = self.read_single_byte().map_err(ReadLdapError::Io)?;
-        if !is_tag_triple(
-            seq_tag,
-            crate::tag::TagClass::Universal,
-            PrimitiveOrConstructed::Constructed,
-            0b00010000,
-        ) {
+        if self.read_single_byte().map_err(ReadLdapError::Io)? != UNIVERSAL_SEQUENCE {
             return Err(ReadLdapError::InvalidSequenceTag);
         }
-        let (seq_length, _) = self.read_length().map_err(ReadLdapError::Io)?;
-        let seq_length = seq_length.unwrap();
+        let seq_length = self.read_length().map_err(ReadLdapError::Io)?.0.unwrap();
         let (int_tag, message_id, int_len) = self.read_integer_unverified().map_err(ReadLdapError::Io)?;
-        if !is_tag_triple(
-            int_tag,
-            TagClass::Universal,
-            PrimitiveOrConstructed::Primitive,
-            0x02,
-        ) {
+        if int_tag != UNIVERSAL_INTEGER {
             panic!("not an integer");
         }
 
@@ -81,25 +69,14 @@ pub enum ReadLdapError {
 
 pub(crate) trait AsyncReadLdap: AsyncReadExt + Unpin {
     async fn read_message_head(&mut self) -> Result<(i32, Vec<u8>), ReadLdapError> {
-        let seq_tag = self.read_u8().await.map_err(ReadLdapError::Io)?;
-        if !is_tag_triple(
-            seq_tag,
-            crate::tag::TagClass::Universal,
-            PrimitiveOrConstructed::Constructed,
-            0b00010000,
-        ) {
+        if self.read_u8().await.map_err(ReadLdapError::Io)? != UNIVERSAL_SEQUENCE {
             return Err(ReadLdapError::InvalidSequenceTag);
         }
         let (seq_length, _) = self.read_length().await.map_err(ReadLdapError::Io)?;
         let seq_length = seq_length.unwrap();
         let (int_tag, message_id, int_len) =
             self.read_integer_unverified().await.map_err(ReadLdapError::Io)?;
-        if !is_tag_triple(
-            int_tag,
-            TagClass::Universal,
-            PrimitiveOrConstructed::Primitive,
-            0x02,
-        ) {
+        if int_tag != UNIVERSAL_INTEGER {
             panic!("not an integer");
         }
 

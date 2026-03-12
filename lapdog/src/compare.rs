@@ -1,13 +1,14 @@
-use std::io::{Read, Write};
+use std::io::Read;
 
 use crate::{
     LdapConnection, ResponseProtocolOp, SendMessageError, WriteExt,
+    attribute::AttributeValueAssertion,
     integer::read_integer_body,
     length::read_length,
     message::{ProtocolOp, ReadProtocolOpError, RequestProtocolOp},
     read::ReadExt,
     result::ResultCode,
-    tag::{OCTET_STRING, UNIVERSAL_ENUMERATED, UNIVERSAL_SEQUENCE},
+    tag::{OCTET_STRING, UNIVERSAL_ENUMERATED},
 };
 
 impl LdapConnection {
@@ -21,7 +22,8 @@ impl LdapConnection {
                 entry,
                 value_assertion,
             })
-            .await?;
+            .await?
+            .into_message();
         let ResponseProtocolOp::Compare { compare } =
             ResponseProtocolOp::read_from(&mut response.as_slice())?
         else {
@@ -125,26 +127,5 @@ pub(crate) enum ReadCompareError {
 impl From<std::io::Error> for ReadCompareError {
     fn from(value: std::io::Error) -> Self {
         Self::Io(value)
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct AttributeValueAssertion<'d> {
-    pub attribute_desc: &'d str,
-    pub assertion_value: &'d [u8],
-}
-impl AttributeValueAssertion<'_> {
-    fn write_into<W: Write>(&self, w: &mut W) -> std::io::Result<()> {
-        w.write_single_byte(UNIVERSAL_SEQUENCE)?;
-        let mut seq_inner = Vec::new();
-        seq_inner.write_single_byte(OCTET_STRING)?;
-        seq_inner.write_ber_length(self.attribute_desc.len())?;
-        seq_inner.write_all(self.attribute_desc.as_bytes())?;
-        seq_inner.write_single_byte(OCTET_STRING)?;
-        seq_inner.write_ber_length(self.assertion_value.len())?;
-        seq_inner.write_all(self.assertion_value)?;
-        w.write_ber_length(seq_inner.len())?;
-        w.write_all(&seq_inner)?;
-        Ok(())
     }
 }
