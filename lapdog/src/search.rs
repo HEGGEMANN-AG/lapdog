@@ -68,6 +68,11 @@ impl SearchResults {
         if let Err(SearchResultError::CouldNotReadSize) = res {
             self.buffer.clear();
         }
+        if let Ok(SearchResult::Done { .. }) = res
+            && let Some(shutdown) = self.done.take()
+        {
+            let _ = shutdown.send(());
+        }
         Some(res)
     }
 }
