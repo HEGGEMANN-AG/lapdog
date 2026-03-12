@@ -32,11 +32,13 @@ impl LdapConnection {
             Mechanism::KerberosV5 => SaslMechanism::GSSAPI,
             Mechanism::Spnego => SaslMechanism::GSSSPNEGO,
         };
-        if self.is_tls().await {
-            #[cfg(feature = "native-tls")]
-            return self.bind_gss_tls(cred, mech, spn).await;
-            #[cfg(not(feature = "native-tls"))]
-            unreachable!()
+        let is_tls = match self.tcp.lock().await.as_ref().unwrap() {
+            StreamWriteHalf::Plain(_) => false,
+            StreamWriteHalf::NativeTls(_) => true,
+            StreamWriteHalf::Kerberos(_, _) => panic!("Already bound with Kerberos, cannot bind again"),
+        };
+        if is_tls {
+            self.bind_gss_tls(cred, mech, spn).await
         } else {
             self.bind_gss(cred, mech, spn).await
         }
