@@ -387,7 +387,10 @@ pub mod test {
             use std::time::Duration;
 
             match tokio::time::timeout(Duration::from_secs(4), search.next()).await {
-                Ok(Some(_)) => count += 1,
+                Ok(Some(e)) => {
+                    dbg!(e);
+                    count += 1
+                }
                 Ok(None) | Err(_) => break,
             };
         }

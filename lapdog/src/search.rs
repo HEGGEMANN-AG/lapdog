@@ -2,9 +2,11 @@ use std::{collections::VecDeque, io::Read};
 
 use crate::{
     LdapConnection, ReceiveMessageError, WriteExt,
+    integer::read_integer_body,
     length::read_length,
     message::RequestProtocolOp,
     read::ReadExt,
+    result::ResultCode,
     tag::{
         self, OCTET_STRING, UNIVERSAL_BOOLEAN, UNIVERSAL_ENUMERATED, UNIVERSAL_INTEGER, UNIVERSAL_SEQUENCE,
     },
@@ -104,7 +106,28 @@ pub(crate) fn read_search<R: Read>(mut bytes: R) -> Result<SearchResult, SearchR
             };
             Ok(SearchResult::Entry { object_name })
         }
-        5 => Ok(SearchResult::Done),
+        5 => {
+            if bytes
+                .read_single_byte()
+                .map_err(|_| SearchResultError::InvalidSchema)?
+                != UNIVERSAL_ENUMERATED
+            {
+                return Err(SearchResultError::InvalidSchema);
+            }
+            let Ok(Some(int_len)) = read_length(&mut bytes) else {
+                return Err(SearchResultError::InvalidSchema);
+            };
+            let mut int = vec![0; int_len];
+            bytes
+                .read_exact(&mut int)
+                .map_err(|_| SearchResultError::InvalidSchema)?;
+            let code = read_integer_body(&int)
+                .ok()
+                .and_then(|i| i.try_into().ok())
+                .and_then(ResultCode::from_code)
+                .ok_or(SearchResultError::InvalidSchema)?;
+            Ok(SearchResult::Done { code })
+        }
         19 => Ok(SearchResult::Reference),
         _ => todo!(),
     }
@@ -119,7 +142,7 @@ pub enum SearchResultError {
 pub enum SearchResult {
     Entry { object_name: String },
     Reference,
-    Done,
+    Done { code: ResultCode },
 }
 
 pub(crate) fn write_search<'a>(
