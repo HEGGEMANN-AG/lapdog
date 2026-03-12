@@ -22,7 +22,7 @@ impl Authentication<'_> {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[allow(clippy::upper_case_acronyms)]
 pub enum SaslMechanism {
     GSSAPI,

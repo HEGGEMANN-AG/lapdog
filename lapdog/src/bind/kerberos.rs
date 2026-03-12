@@ -17,7 +17,22 @@ use crate::{
     stream::StreamReadHalf,
 };
 
-pub(crate) struct MaybeEncryptableClientContext {
+fn get_context_builder(
+    cred: Credentials<Outbound>,
+    target_principal: Option<&str>,
+    mech: SaslMechanism,
+    is_tls: bool,
+) -> ClientBuilder<Outbound> {
+    let b = ClientBuilder::new_from_credentials(cred, target_principal).request_mutual_auth();
+    match (mech, is_tls) {
+        (SaslMechanism::GSSSPNEGO, true) => b,
+        (SaslMechanism::GSSAPI, true) => b.request_signing().request_delegation(),
+        (SaslMechanism::GSSAPI, false) => b.request_signing().request_encryption().request_delegation(),
+        (SaslMechanism::GSSSPNEGO, false) => b.request_signing().request_encryption(),
+    }
+}
+
+pub(crate) struct MaybeEncryptClientContext {
     kind: InnerContext,
     sign_only: bool,
 }
@@ -25,7 +40,7 @@ enum InnerContext {
     SignOnly(ClientContext<Outbound, Signing, NoEncryption, MaybeDelegation>),
     CanEncrypt(ClientContext<Outbound, Signing, Encryption, MaybeDelegation>),
 }
-impl MaybeEncryptableClientContext {
+impl MaybeEncryptClientContext {
     pub fn wrap_best(&self, input: &[u8]) -> Box<dyn Deref<Target = [u8]>> {
         if self.sign_only {
             return Box::new(self.sign(input).unwrap());
@@ -85,6 +100,7 @@ impl LdapConnection {
             self.bind_gss(cred, mech, spn).await
         }
     }
+
     #[cfg(feature = "native-tls")]
     async fn bind_gss_tls(
         &mut self,
@@ -106,19 +122,10 @@ impl LdapConnection {
             .unwrap();
         let client_builder = {
             let (mut own_lock, read_half) = tokio::join!(self.tcp.lock(), rec_stream_half);
-            use kenobi::client::ClientBuilder;
-
             use crate::stream::Stream;
             let write = own_lock.take().unwrap();
             let stream = Stream::unsplit(read_half.unwrap(), write);
-            let client_builder = ClientBuilder::new_from_credentials(cred, spn)
-                .request_mutual_auth()
-                .bind_to_channel(&stream)
-                .unwrap();
-            let client_builder = match mechanism {
-                SaslMechanism::GSSAPI => client_builder.request_delegation(),
-                SaslMechanism::GSSSPNEGO => client_builder,
-            };
+            let client_builder = get_context_builder(cred, spn, mechanism, true).bind_to_channel(&stream);
             let (r, w) = stream.split();
             *own_lock = Some(w);
             if give_back_stream_half.send(r).is_err() {
@@ -126,8 +133,71 @@ impl LdapConnection {
             };
             client_builder
         };
-        self.exchange_gss_tokens(client_builder, mechanism).await?;
-        Ok(())
+        let Ok(client_builder) = client_builder else {
+            return Err(BindError::ChannelBind);
+        };
+        let (Some(ctx), status) = self.exchange_gss_tokens(client_builder, mechanism).await? else {
+            println!("context not ready after exchange");
+            return Err(BindError::InvalidSecurityContext);
+        };
+        match (mechanism, status) {
+            (SaslMechanism::GSSSPNEGO, BindStatus::Finished) => Ok(()),
+            (SaslMechanism::GSSAPI, BindStatus::Pending) => {
+                let Ok(signing) = ctx.check_signing() else {
+                    return Err(BindError::Insecure);
+                };
+                self.do_kerberos_negotiation_exchange(signing, false).await?;
+                Ok(())
+            }
+            _ => todo!(),
+        }
+    }
+
+    /// Technically too strict, as this could also just hold the lock on inflight_requests directly
+    async fn bind_gss(
+        &mut self,
+        cred: Credentials<Outbound>,
+        mechanism: SaslMechanism,
+        spn: Option<&str>,
+    ) -> Result<(), BindError> {
+        let inflight_requests = self.inflight_requests.lock().await;
+        if !inflight_requests.is_empty() {
+            panic!("cannot be active requests in flight for bind operations");
+        }
+        drop(inflight_requests);
+        let client_builder = get_context_builder(cred, spn, mechanism, false);
+        let (Some(finished_ctx), server_status) = self.exchange_gss_tokens(client_builder, mechanism).await?
+        else {
+            return Err(BindError::InvalidSchema);
+        };
+        match (mechanism, server_status) {
+            (SaslMechanism::GSSSPNEGO, BindStatus::Finished) => {
+                // Just assume I can encrypt honestly, what the fuck is this behaviour
+                let kind = match finished_ctx
+                    .check_signing()
+                    .map_err(|_| BindError::Insecure)?
+                    .check_encryption()
+                {
+                    Ok(can_encrypt) => InnerContext::CanEncrypt(can_encrypt),
+                    Err(sign_only) => InnerContext::SignOnly(sign_only),
+                };
+                let ctx = MaybeEncryptClientContext {
+                    kind,
+                    sign_only: false,
+                };
+                encrypt_stream(&mut self.yoink_read_half, &self.tcp, Arc::new(ctx)).await;
+                Ok(())
+            }
+            (SaslMechanism::GSSAPI, BindStatus::Pending) => {
+                let Ok(signing) = finished_ctx.check_signing() else {
+                    return Err(BindError::Insecure);
+                };
+                let enc_layer = self.do_kerberos_negotiation_exchange(signing, false).await?;
+                encrypt_stream(&mut self.yoink_read_half, &self.tcp, Arc::new(enc_layer)).await;
+                Ok(())
+            }
+            (_, _) => todo!(),
+        }
     }
 
     /// Does the GSSAPI/SPNEGO token exchange.
@@ -188,63 +258,25 @@ impl LdapConnection {
         }
     }
 
-    /// Technically too strict, as this could also just hold the lock on inflight_requests directly
-    async fn bind_gss(
-        &mut self,
-        cred: Credentials<Outbound>,
-        mechanism: SaslMechanism,
-        spn: Option<&str>,
-    ) -> Result<(), BindError> {
-        use std::borrow::Cow;
-        let inflight_requests = self.inflight_requests.lock().await;
-        if !inflight_requests.is_empty() {
-            panic!("cannot be active requests in flight for bind operations");
-        }
-        drop(inflight_requests);
-        let client_builder = ClientBuilder::new_from_credentials(cred, spn)
-            .request_mutual_auth()
-            .request_signing()
-            .request_encryption();
-        let client_builder = match mechanism {
-            SaslMechanism::GSSAPI => client_builder.request_delegation(),
-            SaslMechanism::GSSSPNEGO => client_builder,
-        };
-        let (finished_ctx, server_status) = self.exchange_gss_tokens(client_builder, mechanism).await?;
-        let finished_ctx = finished_ctx
-            .ok_or(BindError::InvalidSchema)?
-            .check_signing()
-            .map_err(|_| BindError::InvalidSecurityContext)?
-            .check_encryption();
-        let mut ctx = MaybeEncryptableClientContext {
-            sign_only: false,
-            kind: match finished_ctx {
-                Ok(c) => InnerContext::CanEncrypt(c),
-                Err(c) => InnerContext::SignOnly(c),
-            },
-        };
-        if let BindStatus::Finished = server_status {
-            replace_streams_with_kerberos(&mut self.yoink_read_half, &self.tcp, Arc::new(ctx)).await;
-            return Ok(());
-        };
+    async fn do_kerberos_negotiation_exchange(
+        &self,
+        ctx: ClientContext<Outbound, Signing, MaybeEncryption, MaybeDelegation>,
+        tls: bool,
+    ) -> Result<MaybeEncryptClientContext, BindError> {
+        // Send empty token to prompt security layer negotiation
+        let authentication = Authentication::sasl_kerberos(None);
         let body = self
-            .send_message(RequestProtocolOp::Bind {
-                authentication: Authentication::Sasl {
-                    mechanism,
-                    credentials: None,
-                },
-            })
+            .send_message(RequestProtocolOp::Bind { authentication })
             .await?
             .into_message();
         let ResponseProtocolOp::Bind {
-            server_sasl_creds, ..
+            server_sasl_creds: Some(server_sasl_creds),
+            ..
         } = ResponseProtocolOp::read_from(&mut body.as_slice())?
         else {
             return Err(BindError::InvalidSchema);
         };
-        let Some(server_offer) = server_sasl_creds else {
-            return Err(BindError::InvalidServerToken);
-        };
-        let token_cleartext = ctx.unwrap(&server_offer).map_err(|_| BindError::GssAPI)?;
+        let token_cleartext = ctx.unwrap(&server_sasl_creds).map_err(|_| BindError::GssAPI)?;
         let Some(token_cleartext): Option<[u8; 4]> = token_cleartext.as_array().copied() else {
             return Err(BindError::InvalidServerToken);
         };
@@ -255,23 +287,34 @@ impl LdapConnection {
         let mut buffer = [0; 4];
         buffer[1..].copy_from_slice(&token_cleartext[1..4]);
         let _buffer_length = u32::from_be_bytes(buffer);
-        buffer[0] = match (bind_offer, &ctx.kind) {
+        dbg!(bind_offer, tls);
+        let maybe_encrypt = ctx.check_encryption();
+        let sign_only = match (bind_offer, &maybe_encrypt) {
             (BindSecurityOffer::None, _) => return Err(BindError::Insecure),
-            (BindSecurityOffer::Signing, _) => {
-                ctx.sign_only = true;
-                0x2
-            }
-            (BindSecurityOffer::Encryption, InnerContext::SignOnly(_)) => 0x2,
-            (BindSecurityOffer::Encryption, InnerContext::CanEncrypt(_)) => 0x4,
+            (BindSecurityOffer::Signing, _) | (BindSecurityOffer::Encryption, Err(_)) => true,
+            (BindSecurityOffer::Encryption, Ok(_)) => false,
         };
-        let wrapped = ctx.sign(&buffer).map_err(|_| BindError::GssAPI)?;
+        buffer[0] = if tls {
+            0x1
+        } else if sign_only {
+            0x2
+        } else {
+            0x4
+        };
+
+        // Wrap the last token and send it
+        let wrapped = match &maybe_encrypt {
+            Ok(s) => s.sign(&buffer)?,
+            Err(e) => e.sign(&buffer)?,
+        };
+        let kind = match maybe_encrypt {
+            Ok(can_encrypt) => InnerContext::CanEncrypt(can_encrypt),
+            Err(sign_only) => InnerContext::SignOnly(sign_only),
+        };
+        let encryption_layer = MaybeEncryptClientContext { kind, sign_only };
+        let authentication = Authentication::sasl_kerberos(Some(&wrapped));
         let last_body = self
-            .send_message(RequestProtocolOp::Bind {
-                authentication: Authentication::Sasl {
-                    mechanism,
-                    credentials: Some(Cow::Borrowed(wrapped.as_slice())),
-                },
-            })
+            .send_message(RequestProtocolOp::Bind { authentication })
             .await?
             .into_message();
         let ResponseProtocolOp::Bind {
@@ -281,22 +324,21 @@ impl LdapConnection {
         else {
             return Err(BindError::InvalidSchema);
         };
-        replace_streams_with_kerberos(&mut self.yoink_read_half, &self.tcp, Arc::new(ctx)).await;
         assert!(
             server_sasl_creds.is_none(),
             "Server should not have sent a token in the final step"
         );
         match status {
-            BindStatus::Finished => Ok(()),
+            BindStatus::Finished => Ok(encryption_layer),
             BindStatus::Pending => Err(BindError::InvalidServerToken),
         }
     }
 }
 
-async fn replace_streams_with_kerberos(
+async fn encrypt_stream(
     yoink_read_half: &mut mpsc::Sender<(oneshot::Sender<StreamReadHalf>, oneshot::Receiver<StreamReadHalf>)>,
     own_stream: &Mutex<Option<StreamWriteHalf>>,
-    client_ctx: Arc<MaybeEncryptableClientContext>,
+    client_ctx: Arc<MaybeEncryptClientContext>,
 ) {
     // take both streams, join them for the channel binding, give them back
     let (return_envelope, rec_stream_half) = tokio::sync::oneshot::channel();
@@ -345,12 +387,18 @@ impl BindSecurityOffer {
 pub enum BindError {
     Io(std::io::Error),
     ServerError { code: ResultCode, message: String },
+    ChannelBind,
     SendOrReceive,
     GssAPI,
     Insecure,
     InvalidSchema,
     InvalidSecurityContext,
     InvalidServerToken,
+}
+impl From<WrapError> for BindError {
+    fn from(_: WrapError) -> Self {
+        Self::GssAPI
+    }
 }
 impl From<SendMessageError> for BindError {
     fn from(value: SendMessageError) -> Self {

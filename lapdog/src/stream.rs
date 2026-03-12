@@ -13,7 +13,7 @@ use tokio::{
 };
 
 #[cfg(feature = "kerberos")]
-use crate::bind::kerberos::MaybeEncryptableClientContext;
+use crate::bind::kerberos::MaybeEncryptClientContext;
 use crate::read::{AsyncReadLdap, ReadLdap, ReadLdapError};
 
 pub enum StreamWriteHalf {
@@ -21,7 +21,7 @@ pub enum StreamWriteHalf {
     #[cfg(feature = "native-tls")]
     NativeTls(WriteHalf<tokio_native_tls::TlsStream<TcpStream>>),
     #[cfg(feature = "kerberos")]
-    Kerberos(Arc<MaybeEncryptableClientContext>, OwnedWriteHalf),
+    Kerberos(Arc<MaybeEncryptClientContext>, OwnedWriteHalf),
 }
 impl StreamWriteHalf {
     pub async fn write_message(&mut self, m: &[u8]) -> Result<(), std::io::Error> {
@@ -47,7 +47,7 @@ pub enum StreamReadHalf {
     #[cfg(feature = "native-tls")]
     NativeTls(ReadHalf<tokio_native_tls::TlsStream<TcpStream>>),
     #[cfg(feature = "kerberos")]
-    Kerberos(Arc<MaybeEncryptableClientContext>, VecDeque<u8>, OwnedReadHalf),
+    Kerberos(Arc<MaybeEncryptClientContext>, VecDeque<u8>, OwnedReadHalf),
 }
 impl StreamReadHalf {
     pub async fn get_next_message(&mut self) -> Result<(i32, Vec<u8>), ReadLdapError> {
@@ -80,7 +80,7 @@ pub enum Stream {
     #[cfg(feature = "native-tls")]
     NativeTls(tokio_native_tls::TlsStream<TcpStream>),
     #[cfg(feature = "kerberos")]
-    Kerberos(Arc<MaybeEncryptableClientContext>, VecDeque<u8>, TcpStream),
+    Kerberos(Arc<MaybeEncryptClientContext>, VecDeque<u8>, TcpStream),
 }
 impl Stream {
     pub fn split(self) -> (StreamReadHalf, StreamWriteHalf) {
