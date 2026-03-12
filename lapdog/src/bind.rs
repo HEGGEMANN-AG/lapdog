@@ -79,18 +79,18 @@ pub fn read_response<R: Read>(mut r: R) -> Result<BindResponse, ReadBindError> {
 
     let matched_dn_tag = r.read_single_byte()?;
     if matched_dn_tag != OCTET_STRING {
-        panic!("Invalid matched DN string");
+        return Err(ReadBindError::InvalidSchema);
     }
     let matched_dn_len = read_length(&mut r)?.ok_or(ReadBindError::InvalidSchema)?;
     let mut matched_dn = vec![0; matched_dn_len];
     r.read_exact(&mut matched_dn)?;
     let Ok(matched_dn) = String::from_utf8(matched_dn) else {
-        panic!("non-utf8 matched DN")
+        return Err(ReadBindError::InvalidSchema);
     };
 
     let diagnostics_tag = r.read_single_byte()?;
     if diagnostics_tag != OCTET_STRING {
-        panic!("Invalid diagnostics message");
+        return Err(ReadBindError::InvalidSchema);
     }
     let diagnostics_len = read_length(&mut r)?.ok_or(ReadBindError::InvalidSchema)?;
     let mut diagnostics_message = vec![0; diagnostics_len];
