@@ -15,6 +15,7 @@ pub(crate) trait ReadExt: Read {
     }
 }
 impl<R: Read> ReadExt for R {}
+
 pub(crate) trait ReadLdap: ReadExt {
     fn read_message_head(&mut self) -> Result<(i32, Vec<u8>), ReadLdapError> {
         let seq_tag = self.read_single_byte().map_err(ReadLdapError::Io)?;

@@ -5,10 +5,10 @@ use std::{
     task::{Context, Poll},
 };
 
-use kenobi::cred::Outbound;
 #[cfg(feature = "kerberos")]
 use kenobi::{
     client::ClientContext,
+    cred::Outbound,
     typestate::{Encryption, MaybeDelegation, Signing},
 };
 #[cfg(feature = "native-tls")]
@@ -82,6 +82,7 @@ impl AsyncWrite for StreamWriteHalf {
             StreamWriteHalf::Plain(owned_write_half) => Pin::new(owned_write_half).poll_flush(cx),
             #[cfg(feature = "native-tls")]
             StreamWriteHalf::NativeTls(write_half) => Pin::new(write_half).poll_flush(cx),
+            #[cfg(feature = "kerberos")]
             StreamWriteHalf::Kerberos(_, write_half) => Pin::new(write_half).poll_flush(cx),
         }
     }
@@ -91,6 +92,7 @@ impl AsyncWrite for StreamWriteHalf {
             StreamWriteHalf::Plain(owned_write_half) => Pin::new(owned_write_half).poll_shutdown(cx),
             #[cfg(feature = "native-tls")]
             StreamWriteHalf::NativeTls(write_half) => Pin::new(write_half).poll_shutdown(cx),
+            #[cfg(feature = "kerberos")]
             StreamWriteHalf::Kerberos(_, write_half) => Pin::new(write_half).poll_shutdown(cx),
         }
     }
@@ -179,6 +181,7 @@ impl Stream {
                 let (r, w) = tokio::io::split(n);
                 (StreamReadHalf::NativeTls(r), StreamWriteHalf::NativeTls(w))
             }
+            #[cfg(feature = "kerberos")]
             Self::Kerberos(client, tcp) => {
                 let (r, w) = tcp.into_split();
                 (
