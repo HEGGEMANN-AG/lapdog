@@ -109,9 +109,9 @@ impl LdapConnection {
                         },
                     })
                     .await
-                    .unwrap();
+                    .map_err(|_| BindError::SendOrReceive)?;
                 let ResponseProtocolOp::Bind { status, .. } =
-                    ResponseProtocolOp::read_from(&mut body.as_slice()).unwrap()
+                    ResponseProtocolOp::read_from(&mut body.as_slice())?
                 else {
                     return Err(BindError::InvalidSchema);
                 };
@@ -127,7 +127,7 @@ impl LdapConnection {
                         },
                     })
                     .await
-                    .unwrap();
+                    .map_err(|_| BindError::SendOrReceive)?;
                 let ResponseProtocolOp::Bind {
                     server_sasl_creds,
                     status,
@@ -187,7 +187,7 @@ impl LdapConnection {
                 },
             })
             .await
-            .unwrap();
+            .map_err(|_| BindError::SendOrReceive)?;
         let ResponseProtocolOp::Bind {
             server_sasl_creds, ..
         } = ResponseProtocolOp::read_from(&mut body.as_slice())?
@@ -197,12 +197,11 @@ impl LdapConnection {
         let Some(server_offer) = server_sasl_creds else {
             return Err(BindError::InvalidServerToken);
         };
-        drop(body);
         let token_cleartext = finished_ctx
             .unwrap(&server_offer)
             .map_err(|_| BindError::GssAPI)?;
         let Some(token_cleartext): Option<[u8; 4]> = token_cleartext.as_array().copied() else {
-            panic!("Server didn't send 4 bytes");
+            return Err(BindError::InvalidServerToken);
         };
         let Some(bind_offer) = BindSecurityOffer::highest_from_bitmask(token_cleartext[0]) else {
             return Err(BindError::InvalidServerToken);
@@ -222,13 +221,13 @@ impl LdapConnection {
                 },
             })
             .await
-            .unwrap();
+            .map_err(|_| BindError::SendOrReceive)?;
         let ResponseProtocolOp::Bind {
             server_sasl_creds,
             status,
         } = ResponseProtocolOp::read_from(&mut last_body.as_slice())?
         else {
-            panic!()
+            return Err(BindError::InvalidSchema);
         };
         replace_streams_with_kerberos(&mut self.yoink_read_half, &self.tcp, Arc::new(finished_ctx)).await;
         assert!(
@@ -297,6 +296,7 @@ impl BindSecurityOffer {
 pub enum BindError {
     Io(std::io::Error),
     ServerError { code: ResultCode, message: String },
+    SendOrReceive,
     GssAPI,
     InvalidSchema,
     InvalidSecurityContext,
