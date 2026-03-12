@@ -131,7 +131,48 @@ pub(crate) fn read_search<R: Read>(mut bytes: R) -> Result<SearchResult, SearchR
                 .and_then(|i| i.try_into().ok())
                 .and_then(ResultCode::from_code)
                 .ok_or(SearchResultError::InvalidSchema)?;
-            Ok(SearchResult::Done { code })
+            // matched dn
+            if bytes
+                .read_single_byte()
+                .map_err(|_| SearchResultError::InvalidSchema)?
+                != OCTET_STRING
+            {
+                return Err(SearchResultError::InvalidSchema);
+            }
+            let Ok(Some(mdn_len)) = read_length(&mut bytes) else {
+                return Err(SearchResultError::InvalidSchema);
+            };
+            let mut matched_dn = vec![0; mdn_len];
+            bytes
+                .read_exact(&mut matched_dn)
+                .map_err(|_| SearchResultError::InvalidSchema)?;
+            let Ok(matched_dn) = String::from_utf8(matched_dn) else {
+                return Err(SearchResultError::InvalidSchema);
+            };
+
+            if bytes
+                .read_single_byte()
+                .map_err(|_| SearchResultError::InvalidSchema)?
+                != OCTET_STRING
+            {
+                return Err(SearchResultError::InvalidSchema);
+            }
+            let Ok(Some(dm_len)) = read_length(&mut bytes) else {
+                return Err(SearchResultError::InvalidSchema);
+            };
+            let mut diagnostics_message = vec![0; dm_len];
+            bytes
+                .read_exact(&mut diagnostics_message)
+                .map_err(|_| SearchResultError::InvalidSchema)?;
+            let Ok(diagnostics_message) = String::from_utf8(diagnostics_message) else {
+                return Err(SearchResultError::InvalidSchema);
+            };
+
+            Ok(SearchResult::Done {
+                code,
+                matched_dn,
+                diagnostics_message,
+            })
         }
         19 => Ok(SearchResult::Reference),
         _ => todo!(),
@@ -145,9 +186,15 @@ pub enum SearchResultError {
 
 #[derive(Debug)]
 pub enum SearchResult {
-    Entry { object_name: String },
+    Entry {
+        object_name: String,
+    },
     Reference,
-    Done { code: ResultCode },
+    Done {
+        code: ResultCode,
+        matched_dn: String,
+        diagnostics_message: String,
+    },
 }
 
 pub(crate) fn write_search<'a>(
