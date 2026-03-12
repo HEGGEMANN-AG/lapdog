@@ -26,7 +26,7 @@ fn get_context_builder(
     let b = ClientBuilder::new_from_credentials(cred, target_principal).request_mutual_auth();
     match (mech, is_tls) {
         (SaslMechanism::GSSSPNEGO, true) => b,
-        (SaslMechanism::GSSAPI, true) => b.request_signing().request_delegation(),
+        (SaslMechanism::GSSAPI, true) => b.request_signing().request_delegation().request_encryption(),
         (SaslMechanism::GSSAPI, false) => b.request_signing().request_encryption().request_delegation(),
         (SaslMechanism::GSSSPNEGO, false) => b.request_signing().request_encryption(),
     }
@@ -146,7 +146,7 @@ impl LdapConnection {
                 let Ok(signing) = ctx.check_signing() else {
                     return Err(BindError::Insecure);
                 };
-                self.do_kerberos_negotiation_exchange(signing, false).await?;
+                self.do_kerberos_negotiation_exchange(signing).await?;
                 Ok(())
             }
             _ => todo!(),
@@ -192,7 +192,7 @@ impl LdapConnection {
                 let Ok(signing) = finished_ctx.check_signing() else {
                     return Err(BindError::Insecure);
                 };
-                let enc_layer = self.do_kerberos_negotiation_exchange(signing, false).await?;
+                let enc_layer = self.do_kerberos_negotiation_exchange(signing).await?;
                 encrypt_stream(&mut self.yoink_read_half, &self.tcp, Arc::new(enc_layer)).await;
                 Ok(())
             }
@@ -261,7 +261,6 @@ impl LdapConnection {
     async fn do_kerberos_negotiation_exchange(
         &self,
         ctx: ClientContext<Outbound, Signing, MaybeEncryption, MaybeDelegation>,
-        tls: bool,
     ) -> Result<MaybeEncryptClientContext, BindError> {
         // Send empty token to prompt security layer negotiation
         let authentication = Authentication::sasl_kerberos(None);
@@ -287,20 +286,13 @@ impl LdapConnection {
         let mut buffer = [0; 4];
         buffer[1..].copy_from_slice(&token_cleartext[1..4]);
         let _buffer_length = u32::from_be_bytes(buffer);
-        dbg!(bind_offer, tls);
         let maybe_encrypt = ctx.check_encryption();
         let sign_only = match (bind_offer, &maybe_encrypt) {
             (BindSecurityOffer::None, _) => return Err(BindError::Insecure),
             (BindSecurityOffer::Signing, _) | (BindSecurityOffer::Encryption, Err(_)) => true,
             (BindSecurityOffer::Encryption, Ok(_)) => false,
         };
-        buffer[0] = if tls {
-            0x1
-        } else if sign_only {
-            0x2
-        } else {
-            0x4
-        };
+        buffer[0] = if sign_only { 0x2 } else { 0x4 };
 
         // Wrap the last token and send it
         let wrapped = match &maybe_encrypt {
