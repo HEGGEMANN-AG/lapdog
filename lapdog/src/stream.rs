@@ -23,10 +23,6 @@ use tokio::{
 
 use crate::read::{AsyncReadLdap, ReadLdap, ReadLdapError};
 
-pub trait StreamPart {
-    fn is_tls(&self) -> bool;
-}
-
 pub enum StreamWriteHalf {
     Plain(OwnedWriteHalf),
     #[cfg(feature = "native-tls")]
@@ -36,17 +32,6 @@ pub enum StreamWriteHalf {
         Arc<ClientContext<Outbound, Signing, Encryption, MaybeDelegation>>,
         OwnedWriteHalf,
     ),
-}
-impl StreamPart for StreamWriteHalf {
-    fn is_tls(&self) -> bool {
-        match self {
-            Self::Plain(_) => false,
-            #[cfg(feature = "native-tls")]
-            Self::NativeTls(_) => true,
-            #[cfg(feature = "kerberos")]
-            Self::Kerberos(_, _) => false,
-        }
-    }
 }
 
 impl AsyncWrite for StreamWriteHalf {
@@ -147,17 +132,6 @@ impl AsyncRead for StreamReadHalf {
         }
     }
 }
-impl StreamPart for StreamReadHalf {
-    fn is_tls(&self) -> bool {
-        match self {
-            Self::Plain(_) => false,
-            #[cfg(feature = "native-tls")]
-            Self::NativeTls(_) => true,
-            #[cfg(feature = "kerberos")]
-            Self::Kerberos(_, _) => false,
-        }
-    }
-}
 #[allow(clippy::large_enum_variant)]
 pub enum Stream {
     Plain(TcpStream),
@@ -208,17 +182,6 @@ impl Stream {
             ) => Stream::Kerberos(client, owned_read_half.reunite(owned_write_half).unwrap()),
             #[cfg(any(feature = "native-tls", feature = "kerberos"))]
             _ => unreachable!(),
-        }
-    }
-}
-impl StreamPart for Stream {
-    fn is_tls(&self) -> bool {
-        match self {
-            Self::Plain(_) => false,
-            #[cfg(feature = "native-tls")]
-            Self::NativeTls(_) => true,
-            #[cfg(feature = "kerberos")]
-            Self::Kerberos(_, _) => false,
         }
     }
 }

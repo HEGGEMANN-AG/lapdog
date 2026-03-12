@@ -33,7 +33,7 @@ use tokio::{
 use crate::{
     message::RequestProtocolOp,
     read::ReadLdapError,
-    stream::{Stream, StreamPart, StreamReadHalf, StreamWriteHalf},
+    stream::{Stream, StreamReadHalf, StreamWriteHalf},
 };
 
 const LDAP_VERSION: i32 = 3;
@@ -97,9 +97,6 @@ impl LdapConnection {
         let fut = Self::drive(read, inflight_requests, give_read_half, shutdown);
         tokio::spawn(fut);
         new
-    }
-    async fn is_tls(&self) -> bool {
-        self.tcp.lock().await.as_ref().unwrap().is_tls()
     }
     async fn send_message(
         &self,
