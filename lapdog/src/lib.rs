@@ -200,27 +200,37 @@ impl<W: Write> WriteExt for W {}
 
 #[cfg(test)]
 mod test {
-    #[tokio::test(flavor = "multi_thread")]
+    use kenobi::mech::Mechanism;
+
     #[cfg(feature = "kerberos")]
-    async fn bind_kerberos() {
-        use kenobi::{cred::Credentials, mech::Mechanism};
+    async fn test_no_tls(mech: Mechanism) {
+        use kenobi::cred::Credentials;
 
         use crate::{LDAP_PORT, LdapConnection, StreamConfig};
         let server = std::env::var("LAPDOG_SERVER").unwrap();
         let target_spn = std::env::var("LAPDOG_TARGET_SPN").ok();
         let own_spn = std::env::var("LAPDOG_OWN_SPN").ok();
-        let cred = Credentials::outbound(own_spn.as_deref(), Mechanism::KerberosV5).unwrap();
+        let cred = Credentials::outbound(own_spn.as_deref(), mech).unwrap();
         let mut connection = LdapConnection::new(&(server, LDAP_PORT), &StreamConfig::default()).await;
         connection
             .bind_sasl_kenobi(cred.clone(), target_spn.as_deref())
             .await
             .unwrap();
     }
-
     #[tokio::test(flavor = "multi_thread")]
+    #[cfg(feature = "kerberos")]
+    async fn bind_kerberos() {
+        test_no_tls(Mechanism::KerberosV5).await
+    }
+    #[tokio::test(flavor = "multi_thread")]
+    #[cfg(feature = "kerberos")]
+    async fn bind_spnego() {
+        test_no_tls(Mechanism::Spnego).await
+    }
+
     #[cfg(all(feature = "kerberos", feature = "native-tls"))]
-    async fn bind_kerberos_tls() {
-        use kenobi::{cred::Credentials, mech::Mechanism};
+    async fn test_tls(mech: Mechanism) {
+        use kenobi::cred::Credentials;
         use native_tls::TlsConnector;
 
         use crate::{LDAPS_PORT, LdapConnection, StreamConfig};
@@ -229,7 +239,7 @@ mod test {
         let own_spn = std::env::var("LAPDOG_OWN_SPN").ok();
         let root = std::env::var("LAPDOG_ROOT_CERT").ok();
         let domain = std::env::var("LAPDOG_DOMAIN").unwrap();
-        let cred = Credentials::outbound(own_spn.as_deref(), Mechanism::KerberosV5).unwrap();
+        let cred = Credentials::outbound(own_spn.as_deref(), mech).unwrap();
         let mut connector = TlsConnector::builder();
         if let Some(root) = root {
             let file = std::fs::read(root).unwrap();
@@ -246,5 +256,17 @@ mod test {
             .bind_sasl_kenobi(cred, target_spn.as_deref())
             .await
             .unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[cfg(all(feature = "kerberos", feature = "native-tls"))]
+    async fn bind_kerberos_tls() {
+        test_tls(Mechanism::KerberosV5).await
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[cfg(all(feature = "kerberos", feature = "native-tls"))]
+    async fn bind_tls_spnego() {
+        test_tls(Mechanism::Spnego).await
     }
 }

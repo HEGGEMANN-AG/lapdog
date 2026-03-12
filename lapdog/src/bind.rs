@@ -10,17 +10,17 @@ use kenobi::{
     cred::{Credentials, Outbound},
 };
 use kenobi::{
-    client::ClientContext,
-    typestate::{Encryption, MaybeDelegation, Signing},
+    client::{ClientContext, StepOut},
+    typestate::{Encryption, MaybeDelegation, MaybeEncryption, MaybeSigning, Signing},
 };
 use tokio::sync::{Mutex, mpsc, oneshot};
 
 use crate::{
     LDAP_VERSION, LdapConnection, ResponseProtocolOp, WriteExt,
     auth::{Authentication, SaslMechanism},
-    integer::{INTEGER_BYTE, read_integer_body},
+    integer::{INTEGER_BYTE, InvalidI32, read_integer_body},
     length::{read_length, write_length},
-    message::{ProtocolOp, RequestProtocolOp},
+    message::{ProtocolOp, ReadProtocolOpError, RequestProtocolOp},
     read::ReadExt,
     result::ResultCode,
     stream::{StreamReadHalf, StreamWriteHalf},
@@ -28,7 +28,7 @@ use crate::{
         OCTET_STRING, PrimitiveOrConstructed as PrimOrCons, TagClass, UNIVERSAL_ENUMERATED, get_tag_number,
     },
 };
-
+type FinishedClientContext = ClientContext<Outbound, MaybeSigning, MaybeEncryption, MaybeDelegation>;
 impl LdapConnection {
     #[cfg(feature = "kerberos")]
     pub async fn bind_sasl_kenobi(
@@ -58,8 +58,6 @@ impl LdapConnection {
         mechanism: SaslMechanism,
         spn: Option<&str>,
     ) -> Result<(), BindError> {
-        use kenobi::client::StepOut;
-
         let inflight_requests = self.inflight_requests.lock().await;
         if !inflight_requests.is_empty() {
             panic!("cannot be active requests in flight for bind operations");
@@ -89,11 +87,17 @@ impl LdapConnection {
             };
             client_builder
         };
+        self.exchange_gss_tokens(client_builder, mechanism).await?;
+        Ok(())
+    }
+
+    async fn exchange_gss_tokens(
+        &self,
+        client_builder: ClientBuilder<Outbound>,
+        mechanism: SaslMechanism,
+    ) -> Result<(Option<FinishedClientContext>, BindStatus), BindError> {
         match client_builder.initialize() {
             StepOut::Finished(f) => {
-                println!(
-                    "Kerberos mechanism finished without any steps, likely because the credentials were already valid for the server"
-                );
                 let Some(token) = f.last_token() else {
                     panic!("Kerberos mechanism didn't return a token on the first step, but it should have")
                 };
@@ -106,15 +110,12 @@ impl LdapConnection {
                     })
                     .await
                     .unwrap();
-                let ResponseProtocolOp::Bind {
-                    server_sasl_creds: Some(token),
-                    status,
-                } = ResponseProtocolOp::read_from(&mut body.as_slice()).unwrap()
+                let ResponseProtocolOp::Bind { status, .. } =
+                    ResponseProtocolOp::read_from(&mut body.as_slice()).unwrap()
                 else {
-                    panic!()
+                    return Err(BindError::InvalidSchema);
                 };
-                dbg!(status, token);
-                todo!()
+                Ok((None, status))
             }
             StepOut::Pending(mut ctx) => loop {
                 use std::borrow::Cow;
@@ -128,18 +129,18 @@ impl LdapConnection {
                     .await
                     .unwrap();
                 let ResponseProtocolOp::Bind {
-                    server_sasl_creds: Some(return_token),
+                    server_sasl_creds,
                     status,
-                } = ResponseProtocolOp::read_from(&mut body.as_slice()).map_err(BindError::Io)?
+                } = ResponseProtocolOp::read_from(&mut body.as_slice())?
                 else {
-                    panic!("Invalid protocol op")
+                    return Err(BindError::InvalidSchema);
                 };
-                if status == BindStatus::Finished {
-                    println!("Server-side authentication finished")
-                }
+                let Some(return_token) = server_sasl_creds else {
+                    return Ok((None, status));
+                };
                 ctx = match ctx.step(&return_token) {
                     StepOut::Pending(pending_client_context) => pending_client_context,
-                    StepOut::Finished(_) => return Ok(()),
+                    StepOut::Finished(f) => return Ok((Some(f), status)),
                 }
             },
         }
@@ -154,9 +155,6 @@ impl LdapConnection {
         spn: Option<&str>,
     ) -> Result<(), BindError> {
         use std::borrow::Cow;
-
-        use kenobi::client::StepOut;
-
         let inflight_requests = self.inflight_requests.lock().await;
         if !inflight_requests.is_empty() {
             panic!("cannot be active requests in flight for bind operations");
@@ -165,48 +163,22 @@ impl LdapConnection {
         let client_builder = ClientBuilder::new_from_credentials(cred, spn)
             .offer_mutual_auth()
             .request_signing()
-            .request_encryption()
-            .request_delegation();
-        let finished_ctx = match client_builder.initialize() {
-            StepOut::Finished(_) => {
-                unreachable!(
-                    "Kerberos mechanism finished without any steps, but we didn't do a GSSAPI bind with TLS, so this shouldn't be possible"
-                )
-            }
-            StepOut::Pending(mut ctx) => loop {
-                use std::borrow::Cow;
-                let (_m, body) = self
-                    .send_message(RequestProtocolOp::Bind {
-                        authentication: Authentication::Sasl {
-                            mechanism,
-                            credentials: Some(Cow::Borrowed(ctx.next_token())),
-                        },
-                    })
-                    .await
-                    .unwrap();
-                let ResponseProtocolOp::Bind {
-                    server_sasl_creds: Some(return_token),
-                    status,
-                } = ResponseProtocolOp::read_from(&mut body.as_slice()).map_err(BindError::Io)?
-                else {
-                    panic!("Invalid protocol op")
-                };
-                if status == BindStatus::Finished {
-                    println!("Server-side authentication finished")
-                }
-                ctx = match ctx.step(&return_token) {
-                    StepOut::Pending(pending_client_context) => pending_client_context,
-                    StepOut::Finished(client_context) => {
-                        break client_context
-                            .check_signing()
-                            .ok()
-                            .and_then(|c| c.check_encryption().ok())
-                            .ok_or(BindError::InvalidSecurityContext)?;
-                    }
-                }
-            },
+            .request_encryption();
+        let client_builder = match mechanism {
+            SaslMechanism::GSSAPI => client_builder.request_delegation(),
+            SaslMechanism::GSSSPNEGO => client_builder,
         };
-        println!("Sending empty response");
+        let (finished_ctx, server_status) = self.exchange_gss_tokens(client_builder, mechanism).await?;
+        let finished_ctx = finished_ctx
+            .ok_or(BindError::InvalidSchema)?
+            .check_signing()
+            .ok()
+            .and_then(|c| c.check_encryption().ok())
+            .ok_or(BindError::InvalidSecurityContext)?;
+        if let BindStatus::Finished = server_status {
+            replace_streams_with_kerberos(&mut self.yoink_read_half, &self.tcp, Arc::new(finished_ctx)).await;
+            return Ok(());
+        };
         let (_, body) = self
             .send_message(RequestProtocolOp::Bind {
                 authentication: Authentication::Sasl {
@@ -217,28 +189,31 @@ impl LdapConnection {
             .await
             .unwrap();
         let ResponseProtocolOp::Bind {
-            server_sasl_creds: Some(token),
-            status,
-        } = ResponseProtocolOp::read_from(&mut body.as_slice()).unwrap()
+            server_sasl_creds, ..
+        } = ResponseProtocolOp::read_from(&mut body.as_slice())?
         else {
-            panic!()
+            return Err(BindError::InvalidSchema);
         };
-        dbg!(status);
+        let Some(server_offer) = server_sasl_creds else {
+            return Err(BindError::InvalidServerToken);
+        };
         drop(body);
-        let token_cleartext = finished_ctx.unwrap(&token).unwrap();
+        let token_cleartext = finished_ctx
+            .unwrap(&server_offer)
+            .map_err(|_| BindError::GssAPI)?;
         let Some(token_cleartext): Option<[u8; 4]> = token_cleartext.as_array().copied() else {
             panic!("Server didn't send 4 bytes");
         };
-        let Some(bitmask) = BindSecurityOffer::highest_from_bitmask(token_cleartext[0]) else {
+        let Some(bind_offer) = BindSecurityOffer::highest_from_bitmask(token_cleartext[0]) else {
             return Err(BindError::InvalidServerToken);
         };
-        eprintln!("Bitmask sent in subsequent challenge: {bitmask:?}");
+        dbg!(bind_offer);
+
         let mut buffer = [0; 4];
         buffer[1..].copy_from_slice(&token_cleartext[1..4]);
-        let buffer_length = u32::from_be_bytes(buffer);
-        eprintln!("Buffer length offered: {buffer_length}");
+        let _buffer_length = u32::from_be_bytes(buffer);
         buffer[0] = 0x4;
-        let wrapped = finished_ctx.sign(&buffer).unwrap();
+        let wrapped = finished_ctx.sign(&buffer).map_err(|_| BindError::GssAPI)?;
         let (_id, last_body) = self
             .send_message(RequestProtocolOp::Bind {
                 authentication: Authentication::Sasl {
@@ -251,7 +226,7 @@ impl LdapConnection {
         let ResponseProtocolOp::Bind {
             server_sasl_creds,
             status,
-        } = ResponseProtocolOp::read_from(&mut last_body.as_slice()).unwrap()
+        } = ResponseProtocolOp::read_from(&mut last_body.as_slice())?
         else {
             panic!()
         };
@@ -321,8 +296,20 @@ impl BindSecurityOffer {
 #[cfg(feature = "kerberos")]
 pub enum BindError {
     Io(std::io::Error),
+    ServerError { code: ResultCode, message: String },
+    GssAPI,
+    InvalidSchema,
     InvalidSecurityContext,
     InvalidServerToken,
+}
+impl From<ReadProtocolOpError> for BindError {
+    fn from(value: ReadProtocolOpError) -> Self {
+        match value {
+            ReadProtocolOpError::Io(io_err) => BindError::Io(io_err),
+            ReadProtocolOpError::ProtocolError { code, message } => BindError::ServerError { code, message },
+            ReadProtocolOpError::InvalidSchema => BindError::InvalidSchema,
+        }
+    }
 }
 
 pub fn write_bind(auth: &Authentication) -> std::io::Result<Vec<u8>> {
@@ -363,22 +350,21 @@ pub fn write_bind(auth: &Authentication) -> std::io::Result<Vec<u8>> {
     Ok(bind_msg)
 }
 
-pub fn read_response<R: Read>(mut r: R) -> std::io::Result<BindResponse> {
+pub fn read_response<R: Read>(mut r: R) -> Result<BindResponse, ReadBindError> {
     let tag = r.read_single_byte()?;
     if tag != UNIVERSAL_ENUMERATED {
-        panic!("Invalid schema")
+        return Err(ReadBindError::InvalidSchema);
     }
     // LdapResult code
     let enum_int = {
-        let enum_len = read_length(&mut r)?.unwrap();
+        let enum_len = read_length(&mut r)?.ok_or(ReadBindError::InvalidSchema)?;
         let mut enum_i = vec![0; enum_len];
         r.read_exact(&mut enum_i)?;
-        read_integer_body(&enum_i)
-            .unwrap()
+        read_integer_body(&enum_i)?
             .try_into()
             .ok()
             .and_then(ResultCode::from_code)
-            .unwrap()
+            .ok_or(ReadBindError::InvalidResultCode)?
     };
     let bind_status = match enum_int {
         ResultCode::Success => Ok(BindStatus::Finished),
@@ -390,7 +376,7 @@ pub fn read_response<R: Read>(mut r: R) -> std::io::Result<BindResponse> {
     if matched_dn_tag != OCTET_STRING {
         panic!("Invalid matched DN string");
     }
-    let matched_dn_len = read_length(&mut r)?.unwrap();
+    let matched_dn_len = read_length(&mut r)?.ok_or(ReadBindError::InvalidSchema)?;
     let mut matched_dn = vec![0; matched_dn_len];
     r.read_exact(&mut matched_dn)?;
     let Ok(matched_dn) = String::from_utf8(matched_dn) else {
@@ -401,20 +387,20 @@ pub fn read_response<R: Read>(mut r: R) -> std::io::Result<BindResponse> {
     if diagnostics_tag != OCTET_STRING {
         panic!("Invalid diagnostics message");
     }
-    let diagnostics_len = read_length(&mut r)?.unwrap();
+    let diagnostics_len = read_length(&mut r)?.ok_or(ReadBindError::InvalidSchema)?;
     let mut diagnostics_message = vec![0; diagnostics_len];
     r.read_exact(&mut diagnostics_message)?;
     let diagnostics_message = String::from_utf8_lossy(&diagnostics_message).to_string();
-    let bind_status = match bind_status {
-        Ok(b) => b,
-        Err(code) => panic!("Server returned error: {code:?} (\"{diagnostics_message}\")"),
-    };
+    let bind_status = bind_status.map_err(|code| ReadBindError::BindError {
+        code,
+        message: diagnostics_message.clone(),
+    })?;
 
     let referral_or_sasl_tag = r.read_single_byte()?;
     let sasl_creds = match get_tag_number(referral_or_sasl_tag) {
         0x3 => panic!("unexpected referral"),
         SASL_CREDS => {
-            let sasl_len = read_length(&mut r)?.unwrap();
+            let sasl_len = read_length(&mut r)?.ok_or(ReadBindError::InvalidSchema)?;
             if sasl_len == 0 {
                 None
             } else {
@@ -431,6 +417,24 @@ pub fn read_response<R: Read>(mut r: R) -> std::io::Result<BindResponse> {
         diagnostics_message,
         matched_dn,
     })
+}
+
+#[derive(Debug)]
+pub enum ReadBindError {
+    Io(std::io::Error),
+    BindError { code: ResultCode, message: String },
+    InvalidResultCode,
+    InvalidSchema,
+}
+impl From<std::io::Error> for ReadBindError {
+    fn from(value: std::io::Error) -> Self {
+        Self::Io(value)
+    }
+}
+impl From<InvalidI32> for ReadBindError {
+    fn from(_: InvalidI32) -> Self {
+        Self::InvalidSchema
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]

@@ -13,6 +13,7 @@ use crate::{
     integer::{INTEGER_BYTE, read_integer_body},
     length::{read_length, write_length},
     read::ReadExt,
+    result::ResultCode,
     tag::{
         PrimitiveOrConstructed as PrimOrCons, TagClass, UNIVERSAL_SEQUENCE, get_tag_number, is_tag_triple,
     },
@@ -50,7 +51,7 @@ impl<PO: ProtocolOp> Message<PO> {
 
         let message_id = NonZero::new(read_integer_body(int).map_err(|_| Error::InvalidMessageId)?);
 
-        let protocol_op = PO::read_from(buf_reader)?;
+        let protocol_op = PO::read_from(buf_reader).map_err(Error::ReadProtocolOpError)?;
         Ok(Message {
             message_id,
             protocol_op,
@@ -128,8 +129,8 @@ impl ProtocolOp for ResponseProtocolOp {
         )?;
         todo!()
     }
-    fn read_from<R: Read>(mut r: R) -> std::io::Result<Self> {
-        let choice_tag = r.read_single_byte()?;
+    fn read_from<R: Read>(mut r: R) -> Result<Self, ReadProtocolOpError> {
+        let choice_tag = r.read_single_byte().map_err(ReadProtocolOpError::Io)?;
         let class = TagClass::from_bits(choice_tag);
         let poc = PrimOrCons::from_bit(choice_tag);
         let TagClass::Application = class else {
@@ -139,7 +140,9 @@ impl ProtocolOp for ResponseProtocolOp {
             panic!("Bad choice primitive/constructed");
         };
         let tag = get_tag_number(choice_tag);
-        let len = read_length(&mut r)?.unwrap();
+        let len = read_length(&mut r)
+            .map_err(ReadProtocolOpError::Io)?
+            .ok_or(ReadProtocolOpError::InvalidSchema)?;
         let message_body_reader = r.take(len as u64);
         match tag {
             1 => {
@@ -154,6 +157,23 @@ impl ProtocolOp for ResponseProtocolOp {
                 })
             }
             _ => todo!(),
+        }
+    }
+}
+#[derive(Debug)]
+pub enum ReadProtocolOpError {
+    Io(std::io::Error),
+    ProtocolError { code: ResultCode, message: String },
+    InvalidSchema,
+}
+impl From<bind::ReadBindError> for ReadProtocolOpError {
+    fn from(e: bind::ReadBindError) -> Self {
+        match e {
+            bind::ReadBindError::Io(e) => Self::Io(e),
+            bind::ReadBindError::InvalidResultCode | bind::ReadBindError::InvalidSchema => {
+                Self::InvalidSchema
+            }
+            bind::ReadBindError::BindError { code, message } => Self::ProtocolError { code, message },
         }
     }
 }
@@ -189,7 +209,7 @@ impl ProtocolOp for RequestProtocolOp<'_> {
             Self::Extended => 23,
         }
     }
-    fn read_from<R: Read>(_r: R) -> std::io::Result<Self> {
+    fn read_from<R: Read>(_r: R) -> Result<Self, ReadProtocolOpError> {
         unimplemented!()
     }
     fn write_into<W: Write>(&self, mut w: W) -> std::io::Result<()> {
@@ -207,7 +227,7 @@ impl ProtocolOp for RequestProtocolOp<'_> {
 
 pub trait ProtocolOp: Sized {
     fn to_tag(&self) -> u8;
-    fn read_from<R: Read>(r: R) -> std::io::Result<Self>;
+    fn read_from<R: Read>(r: R) -> Result<Self, ReadProtocolOpError>;
     fn write_into<W: Write>(&self, w: W) -> std::io::Result<()>;
 }
 
@@ -216,6 +236,7 @@ pub enum Error {
     InvalidMessageId,
     InvalidMessageStructure,
     InvalidProtocolOp,
+    ReadProtocolOpError(ReadProtocolOpError),
     UnexpectedEOF,
 }
 impl From<std::io::Error> for Error {
@@ -229,6 +250,7 @@ impl Display for Error {
             Self::InvalidMessageId => write!(f, "Invalid message ID"),
             Self::InvalidMessageStructure => write!(f, "Invalid message structure"),
             Self::InvalidProtocolOp => write!(f, "Invalid protocol op"),
+            Self::ReadProtocolOpError(r) => write!(f, "Error reading protocol op: {r:?}"),
             Self::UnexpectedEOF => write!(f, "Unexpected end of stream"),
         }
     }
