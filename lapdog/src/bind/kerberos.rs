@@ -17,6 +17,10 @@ use crate::{
 };
 type FinishedClientContext = ClientContext<Outbound, MaybeSigning, MaybeEncryption, MaybeDelegation>;
 impl LdapConnection {
+    /// Binds the current connection via Kerberos using the kenobi crate.
+    /// The mechanism used depends on the underlying mechanism on the Kenobi credentials handle.
+    /// If the connection is already on TLS, channel bindings will be provided.
+    /// If the connection is not, it will upgrade to a GSSAPI-wrapped LDAP stream.
     pub async fn bind_sasl_kenobi(
         &mut self,
         cred: Credentials<Outbound>,
@@ -79,6 +83,9 @@ impl LdapConnection {
         Ok(())
     }
 
+    /// Does the GSSAPI/SPNEGO token exchange.
+    /// If the finished context is `None`, the server didn't provide a token to finish the own security context.
+    /// This may be an error, but is also valid if the connection is made through TLS and mutual authentication is already implied
     async fn exchange_gss_tokens(
         &self,
         client_builder: ClientBuilder<Outbound>,
@@ -107,7 +114,7 @@ impl LdapConnection {
             }
             StepOut::Pending(mut ctx) => loop {
                 use std::borrow::Cow;
-                let (_m, body) = self
+                let (_, body) = self
                     .send_message(RequestProtocolOp::Bind {
                         authentication: Authentication::Sasl {
                             mechanism,
@@ -221,10 +228,9 @@ impl LdapConnection {
             server_sasl_creds.is_none(),
             "Server should not have sent a token in the final step"
         );
-        if status == BindStatus::Finished {
-            Ok(())
-        } else {
-            panic!("Server should have finished after the final step")
+        match status {
+            BindStatus::Finished => Ok(()),
+            BindStatus::Pending => Err(BindError::InvalidServerToken),
         }
     }
 }
