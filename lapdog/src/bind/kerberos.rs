@@ -1,9 +1,10 @@
-use std::sync::Arc;
+use std::{ops::Deref, sync::Arc};
 
 use kenobi::{
     client::{ClientBuilder, ClientContext, StepOut},
     cred::{Credentials, Outbound},
-    typestate::{Encryption, MaybeDelegation, MaybeEncryption, MaybeSigning, Signing},
+    sign_encrypt::{Signature, UnwrapError, WrapError},
+    typestate::{Encryption, MaybeDelegation, MaybeEncryption, MaybeSigning, NoEncryption, Signing},
 };
 use tokio::sync::{Mutex, mpsc, oneshot};
 
@@ -15,6 +16,43 @@ use crate::{
     result::ResultCode,
     stream::StreamReadHalf,
 };
+
+pub(crate) struct MaybeEncryptableClientContext {
+    kind: InnerContext,
+    sign_only: bool,
+}
+enum InnerContext {
+    SignOnly(ClientContext<Outbound, Signing, NoEncryption, MaybeDelegation>),
+    CanEncrypt(ClientContext<Outbound, Signing, Encryption, MaybeDelegation>),
+}
+impl MaybeEncryptableClientContext {
+    pub fn wrap_best(&self, input: &[u8]) -> Box<dyn Deref<Target = [u8]>> {
+        if self.sign_only {
+            return Box::new(self.sign(input).unwrap());
+        }
+        match &self.kind {
+            InnerContext::SignOnly(ctx) => Box::new(ctx.sign(input).unwrap()),
+            InnerContext::CanEncrypt(ctx) => Box::new(ctx.encrypt(input).unwrap()),
+        }
+    }
+    fn sign(&self, input: &[u8]) -> Result<Signature, WrapError> {
+        match &self.kind {
+            InnerContext::SignOnly(ctx) => ctx.sign(input),
+            InnerContext::CanEncrypt(ctx) => ctx.sign(input),
+        }
+    }
+    pub fn unwrap(&self, input: &[u8]) -> Result<Box<dyn Deref<Target = [u8]>>, UnwrapError> {
+        match &self.kind {
+            InnerContext::SignOnly(ctx) => ctx
+                .unwrap(input)
+                .map(|v| Box::new(v) as Box<dyn Deref<Target = [u8]>>),
+            InnerContext::CanEncrypt(ctx) => ctx
+                .unwrap(input)
+                .map(|v| Box::new(v) as Box<dyn Deref<Target = [u8]>>),
+        }
+    }
+}
+
 type FinishedClientContext = ClientContext<Outbound, MaybeSigning, MaybeEncryption, MaybeDelegation>;
 impl LdapConnection {
     /// Binds the current connection via Kerberos using the kenobi crate.
@@ -168,11 +206,17 @@ impl LdapConnection {
         let finished_ctx = finished_ctx
             .ok_or(BindError::InvalidSchema)?
             .check_signing()
-            .ok()
-            .and_then(|c| c.check_encryption().ok())
-            .ok_or(BindError::InvalidSecurityContext)?;
+            .map_err(|_| BindError::InvalidSecurityContext)?
+            .check_encryption();
+        let mut ctx = MaybeEncryptableClientContext {
+            sign_only: false,
+            kind: match finished_ctx {
+                Ok(c) => InnerContext::CanEncrypt(c),
+                Err(c) => InnerContext::SignOnly(c),
+            },
+        };
         if let BindStatus::Finished = server_status {
-            replace_streams_with_kerberos(&mut self.yoink_read_half, &self.tcp, Arc::new(finished_ctx)).await;
+            replace_streams_with_kerberos(&mut self.yoink_read_half, &self.tcp, Arc::new(ctx)).await;
             return Ok(());
         };
         let (_, body) = self
@@ -193,22 +237,27 @@ impl LdapConnection {
         let Some(server_offer) = server_sasl_creds else {
             return Err(BindError::InvalidServerToken);
         };
-        let token_cleartext = finished_ctx
-            .unwrap(&server_offer)
-            .map_err(|_| BindError::GssAPI)?;
+        let token_cleartext = ctx.unwrap(&server_offer).map_err(|_| BindError::GssAPI)?;
         let Some(token_cleartext): Option<[u8; 4]> = token_cleartext.as_array().copied() else {
             return Err(BindError::InvalidServerToken);
         };
         let Some(bind_offer) = BindSecurityOffer::highest_from_bitmask(token_cleartext[0]) else {
             return Err(BindError::InvalidServerToken);
         };
-        dbg!(bind_offer);
 
         let mut buffer = [0; 4];
         buffer[1..].copy_from_slice(&token_cleartext[1..4]);
         let _buffer_length = u32::from_be_bytes(buffer);
-        buffer[0] = 0x4;
-        let wrapped = finished_ctx.sign(&buffer).map_err(|_| BindError::GssAPI)?;
+        buffer[0] = match (bind_offer, &ctx.kind) {
+            (BindSecurityOffer::None, _) => return Err(BindError::Insecure),
+            (BindSecurityOffer::Signing, _) => {
+                ctx.sign_only = true;
+                0x2
+            }
+            (BindSecurityOffer::Encryption, InnerContext::SignOnly(_)) => 0x2,
+            (BindSecurityOffer::Encryption, InnerContext::CanEncrypt(_)) => 0x4,
+        };
+        let wrapped = ctx.sign(&buffer).map_err(|_| BindError::GssAPI)?;
         let (_id, last_body) = self
             .send_message(RequestProtocolOp::Bind {
                 authentication: Authentication::Sasl {
@@ -225,7 +274,7 @@ impl LdapConnection {
         else {
             return Err(BindError::InvalidSchema);
         };
-        replace_streams_with_kerberos(&mut self.yoink_read_half, &self.tcp, Arc::new(finished_ctx)).await;
+        replace_streams_with_kerberos(&mut self.yoink_read_half, &self.tcp, Arc::new(ctx)).await;
         assert!(
             server_sasl_creds.is_none(),
             "Server should not have sent a token in the final step"
@@ -240,7 +289,7 @@ impl LdapConnection {
 async fn replace_streams_with_kerberos(
     yoink_read_half: &mut mpsc::Sender<(oneshot::Sender<StreamReadHalf>, oneshot::Receiver<StreamReadHalf>)>,
     own_stream: &Mutex<Option<StreamWriteHalf>>,
-    client_ctx: Arc<ClientContext<Outbound, Signing, Encryption, MaybeDelegation>>,
+    client_ctx: Arc<MaybeEncryptableClientContext>,
 ) {
     // take both streams, join them for the channel binding, give them back
     let (return_envelope, rec_stream_half) = tokio::sync::oneshot::channel();
@@ -291,6 +340,7 @@ pub enum BindError {
     ServerError { code: ResultCode, message: String },
     SendOrReceive,
     GssAPI,
+    Insecure,
     InvalidSchema,
     InvalidSecurityContext,
     InvalidServerToken,

@@ -5,12 +5,6 @@ use std::{
     task::{Context, Poll},
 };
 
-#[cfg(feature = "kerberos")]
-use kenobi::{
-    client::ClientContext,
-    cred::Outbound,
-    typestate::{Encryption, MaybeDelegation, Signing},
-};
 #[cfg(feature = "native-tls")]
 use tokio::io::{ReadHalf, WriteHalf};
 use tokio::{
@@ -21,6 +15,8 @@ use tokio::{
     },
 };
 
+#[cfg(feature = "kerberos")]
+use crate::bind::kerberos::MaybeEncryptableClientContext;
 use crate::read::{AsyncReadLdap, ReadLdap, ReadLdapError};
 
 pub enum StreamWriteHalf {
@@ -28,10 +24,7 @@ pub enum StreamWriteHalf {
     #[cfg(feature = "native-tls")]
     NativeTls(WriteHalf<tokio_native_tls::TlsStream<TcpStream>>),
     #[cfg(feature = "kerberos")]
-    Kerberos(
-        Arc<ClientContext<Outbound, Signing, Encryption, MaybeDelegation>>,
-        OwnedWriteHalf,
-    ),
+    Kerberos(Arc<MaybeEncryptableClientContext>, OwnedWriteHalf),
 }
 
 impl AsyncWrite for StreamWriteHalf {
@@ -49,7 +42,7 @@ impl AsyncWrite for StreamWriteHalf {
             Self::Kerberos(client_context, write_half) => {
                 let mut write_half = Pin::new(write_half);
                 let client_context = Pin::new(client_context);
-                let encrypt = client_context.encrypt(buf).unwrap();
+                let encrypt = client_context.wrap_best(buf);
                 let mut buf = vec![0; 4 + encrypt.len()];
                 buf[..4].copy_from_slice(&(encrypt.len() as u32).to_be_bytes());
                 buf[4..].copy_from_slice(&encrypt);
@@ -87,10 +80,7 @@ pub enum StreamReadHalf {
     #[cfg(feature = "native-tls")]
     NativeTls(ReadHalf<tokio_native_tls::TlsStream<TcpStream>>),
     #[cfg(feature = "kerberos")]
-    Kerberos(
-        Arc<ClientContext<Outbound, Signing, Encryption, MaybeDelegation>>,
-        OwnedReadHalf,
-    ),
+    Kerberos(Arc<MaybeEncryptableClientContext>, OwnedReadHalf),
 }
 impl StreamReadHalf {
     pub async fn get_next_message(&mut self) -> Result<(i32, Vec<u8>), ReadLdapError> {
@@ -106,7 +96,7 @@ impl StreamReadHalf {
                     .read_exact(&mut buf)
                     .await
                     .map_err(ReadLdapError::Io)?;
-                let c = ctx.unwrap(&buf).unwrap();
+                let c = ctx.unwrap(&buf).unwrap().to_vec();
                 let mut cleartext_slice = c.deref();
                 ReadLdap::read_message_head(&mut cleartext_slice)
             }
@@ -138,10 +128,7 @@ pub enum Stream {
     #[cfg(feature = "native-tls")]
     NativeTls(tokio_native_tls::TlsStream<TcpStream>),
     #[cfg(feature = "kerberos")]
-    Kerberos(
-        Arc<ClientContext<Outbound, Signing, Encryption, MaybeDelegation>>,
-        TcpStream,
-    ),
+    Kerberos(Arc<MaybeEncryptableClientContext>, TcpStream),
 }
 impl Stream {
     pub fn split(self) -> (StreamReadHalf, StreamWriteHalf) {

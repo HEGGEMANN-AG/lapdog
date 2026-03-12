@@ -15,7 +15,7 @@ use crate::{
 };
 
 #[cfg(feature = "kerberos")]
-mod kerberos;
+pub mod kerberos;
 
 pub fn write_bind(auth: &Authentication) -> std::io::Result<Vec<u8>> {
     let mut bind_msg = Vec::new();
