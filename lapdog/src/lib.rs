@@ -16,6 +16,7 @@ mod length;
 mod message;
 mod read;
 mod result;
+mod search;
 mod stream;
 mod tag;
 
@@ -59,7 +60,9 @@ impl StreamConfig {
     }
 }
 
-type InFlightRequests = HashMap<NonZero<i32>, Sender<Result<(i32, Vec<u8>), ReceiveMessageError>>>;
+enum InFlightRequestHandler {}
+
+type InFlightRequests = HashMap<NonZero<i32>, Sender<Result<Vec<u8>, ReceiveMessageError>>>;
 pub struct LdapConnection {
     message_id: Arc<AtomicI32>,
     // only none while setting up channel bind
@@ -99,10 +102,7 @@ impl LdapConnection {
         tokio::spawn(fut);
         new
     }
-    async fn send_message(
-        &self,
-        protocol_op: RequestProtocolOp<'_>,
-    ) -> Result<(i32, Vec<u8>), SendMessageError> {
+    async fn send_message(&self, protocol_op: RequestProtocolOp<'_>) -> Result<Vec<u8>, SendMessageError> {
         let message_id = self.message_id.fetch_add(1, Ordering::Relaxed);
         let id = NonZero::new(message_id).unwrap();
         let (sx, rx) = tokio::sync::oneshot::channel();
@@ -165,7 +165,7 @@ impl LdapConnection {
             let Some(sender) = inflight_requests.lock().await.remove(&id) else {
                 continue;
             };
-            if let Err(e) = sender.send(Ok((message_id, body))) {
+            if let Err(e) = sender.send(Ok(body)) {
                 eprintln!("channel closed: {e:?}");
             }
         }

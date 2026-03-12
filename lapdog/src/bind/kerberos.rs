@@ -140,7 +140,7 @@ impl LdapConnection {
                 let Some(token) = f.last_token() else {
                     panic!("Kerberos mechanism didn't return a token on the first step, but it should have")
                 };
-                let (_, body) = self
+                let body = self
                     .send_message(RequestProtocolOp::Bind {
                         authentication: Authentication::Sasl {
                             mechanism,
@@ -157,7 +157,7 @@ impl LdapConnection {
             }
             StepOut::Pending(mut ctx) => loop {
                 use std::borrow::Cow;
-                let (_, body) = self
+                let body = self
                     .send_message(RequestProtocolOp::Bind {
                         authentication: Authentication::Sasl {
                             mechanism,
@@ -221,7 +221,7 @@ impl LdapConnection {
             replace_streams_with_kerberos(&mut self.yoink_read_half, &self.tcp, Arc::new(ctx)).await;
             return Ok(());
         };
-        let (_, body) = self
+        let body = self
             .send_message(RequestProtocolOp::Bind {
                 authentication: Authentication::Sasl {
                     mechanism,
@@ -259,7 +259,7 @@ impl LdapConnection {
             (BindSecurityOffer::Encryption, InnerContext::CanEncrypt(_)) => 0x4,
         };
         let wrapped = ctx.sign(&buffer).map_err(|_| BindError::GssAPI)?;
-        let (_id, last_body) = self
+        let last_body = self
             .send_message(RequestProtocolOp::Bind {
                 authentication: Authentication::Sasl {
                     mechanism,
