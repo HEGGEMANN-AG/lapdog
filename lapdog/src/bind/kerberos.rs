@@ -25,8 +25,9 @@ fn get_context_builder(
 ) -> ClientBuilder<Outbound> {
     let b = ClientBuilder::new_from_credentials(cred, target_principal).request_mutual_auth();
     match (mech, is_tls) {
-        (SaslMechanism::GSSAPI, _) => b.request_signing().request_encryption().request_delegation(),
         (SaslMechanism::GSSSPNEGO, true) => b,
+        (SaslMechanism::GSSAPI, true) => b.request_signing().request_delegation().request_encryption(),
+        (SaslMechanism::GSSAPI, false) => b.request_signing().request_encryption().request_delegation(),
         (SaslMechanism::GSSSPNEGO, false) => b.request_signing().request_encryption(),
     }
 }
