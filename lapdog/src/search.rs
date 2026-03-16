@@ -2,9 +2,9 @@ use std::{collections::VecDeque, io::Read};
 
 use crate::{
     LdapConnection, ReceiveMessageError, WriteExt,
-    integer::read_integer_body,
     length::{LengthError, read_length},
     message::RequestProtocolOp,
+    parse::ParseLdap,
     read::ReadExt,
     result::ResultCode,
     tag::{
@@ -108,21 +108,13 @@ pub(crate) fn read_search<R: Read>(mut bytes: R) -> Result<SearchResult, SearchR
             Ok(SearchResult::Entry { object_name })
         }
         5 => {
-            if bytes
-                .read_single_byte()
-                .map_err(|_| SearchResultError::InvalidSchema)?
-                != UNIVERSAL_ENUMERATED
-            {
+            let (tag, int) = bytes.read_as_tag_integer().unwrap();
+            if tag != UNIVERSAL_ENUMERATED {
                 return Err(SearchResultError::InvalidSchema);
             }
-            let int_len = read_length(&mut bytes)?;
-            let mut int = vec![0; int_len];
-            bytes
-                .read_exact(&mut int)
-                .map_err(|_| SearchResultError::InvalidSchema)?;
-            let code = read_integer_body(&int)
+            let code = int
+                .try_into()
                 .ok()
-                .and_then(|i| i.try_into().ok())
                 .and_then(ResultCode::from_code)
                 .ok_or(SearchResultError::InvalidSchema)?;
             // matched dn
@@ -178,7 +170,7 @@ impl From<LengthError> for SearchResultError {
     fn from(value: LengthError) -> Self {
         match value {
             LengthError::Io(error) => Self::Io(error),
-            LengthError::Unbounded => Self::InvalidSchema,
+            LengthError::Unbounded | LengthError::OutOfRange => Self::InvalidSchema,
         }
     }
 }

@@ -1,6 +1,6 @@
 #[cfg(feature = "kerberos")]
 use std::collections::VecDeque;
-use std::{pin::Pin, sync::Arc};
+use std::{io::Read, pin::Pin, sync::Arc};
 
 #[cfg(feature = "native-tls")]
 use tokio::io::{ReadHalf, WriteHalf};
@@ -14,7 +14,11 @@ use tokio::{
 
 #[cfg(feature = "kerberos")]
 use crate::bind::kerberos::MaybeEncryptClientContext;
-use crate::read::{AsyncReadLdap, ReadLdap, ReadLdapError};
+use crate::{
+    parse::ParseLdap,
+    read::{AsyncReadLdap, ReadExt, ReadLdap},
+    tag::{UNIVERSAL_INTEGER, UNIVERSAL_SEQUENCE},
+};
 
 pub enum StreamWriteHalf {
     Plain(OwnedWriteHalf),
@@ -50,30 +54,64 @@ pub enum StreamReadHalf {
     Kerberos(Arc<MaybeEncryptClientContext>, VecDeque<u8>, OwnedReadHalf),
 }
 impl StreamReadHalf {
-    pub async fn get_next_message(&mut self) -> Result<(i32, Vec<u8>), ReadLdapError> {
+    pub async fn get_next_message(&mut self) -> Result<(i32, Vec<u8>), std::io::Error> {
         match self {
-            StreamReadHalf::Plain(owned_read_half) => owned_read_half.read_message_head().await,
+            StreamReadHalf::Plain(owned_read_half) => Ok(read_message_head_async(owned_read_half).await),
             #[cfg(feature = "native-tls")]
-            StreamReadHalf::NativeTls(read_half) => read_half.read_message_head().await,
+            StreamReadHalf::NativeTls(read_half) => Ok(read_message_head_async(read_half).await),
             #[cfg(feature = "kerberos")]
             StreamReadHalf::Kerberos(ctx, buffer, owned_read_half) => {
                 if buffer.is_empty() {
                     use std::io::Write;
 
-                    let size = owned_read_half.read_u32().await.map_err(ReadLdapError::Io)?;
+                    let size = owned_read_half.read_u32().await?;
                     let mut buf = vec![0u8; size as usize];
-                    owned_read_half
-                        .read_exact(&mut buf)
-                        .await
-                        .map_err(ReadLdapError::Io)?;
+                    owned_read_half.read_exact(&mut buf).await?;
                     let c = ctx.unwrap(&buf).unwrap().to_vec();
                     buffer.write_all(&c).unwrap();
                 }
-                ReadLdap::read_message_head(buffer)
+                Ok(read_message_head_sync(buffer))
             }
         }
     }
 }
+
+async fn read_message_head_async<R: AsyncReadExt + Unpin>(r: &mut R) -> (i32, Vec<u8>) {
+    let seq_tag = r.read_u8().await.unwrap();
+    if seq_tag != UNIVERSAL_SEQUENCE {
+        panic!("Not a sequence");
+    }
+    let (Some(len), _) = r.read_length().await.unwrap() else {
+        panic!()
+    };
+    let mut buffer = vec![0; len];
+    r.read_exact(&mut buffer).await.unwrap();
+    let mut buf_read = buffer.as_slice();
+    let (tag, message_id) = buf_read.read_as_tag_integer().unwrap();
+    if tag != UNIVERSAL_INTEGER {
+        panic!("message id is not an int");
+    }
+    (message_id, buf_read.to_vec())
+}
+
+fn read_message_head_sync<R: Read>(r: &mut R) -> (i32, Vec<u8>) {
+    let seq_tag = r.read_single_byte().unwrap();
+    if seq_tag != UNIVERSAL_SEQUENCE {
+        panic!("Not a sequence");
+    }
+    let (Some(len), _) = r.read_length().unwrap() else {
+        panic!()
+    };
+    let mut buffer = vec![0; len];
+    r.read_exact(&mut buffer).unwrap();
+    let mut buf_read = buffer.as_slice();
+    let (tag, message_id) = buf_read.read_as_tag_integer().unwrap();
+    if tag != UNIVERSAL_INTEGER {
+        panic!("message id is not an int");
+    }
+    (message_id, buf_read.to_vec())
+}
+
 #[allow(clippy::large_enum_variant)]
 pub enum Stream {
     Plain(TcpStream),

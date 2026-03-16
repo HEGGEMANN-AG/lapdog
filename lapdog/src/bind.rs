@@ -5,8 +5,8 @@ const SASL_CREDS: u8 = TagClass::Universal.into_bits() | PrimOrCons::Primitive.i
 use crate::{
     LDAP_VERSION, WriteExt,
     auth::{Authentication, SaslMechanism},
-    integer::{InvalidI32, read_integer_body},
     length::{LengthError, read_length},
+    parse::ParseLdap,
     read::ReadExt,
     result::ResultCode,
     tag::{
@@ -55,21 +55,16 @@ pub fn write_bind(auth: &Authentication) -> Vec<u8> {
 }
 
 pub fn read_response<R: Read>(mut r: R) -> Result<BindResponse, ReadBindError> {
-    let tag = r.read_single_byte()?;
+    let (tag, i) = r.read_as_tag_integer().unwrap();
     if tag != UNIVERSAL_ENUMERATED {
         return Err(ReadBindError::InvalidSchema);
     }
     // LdapResult code
-    let enum_int = {
-        let enum_len = read_length(&mut r)?;
-        let mut enum_i = vec![0; enum_len];
-        r.read_exact(&mut enum_i)?;
-        read_integer_body(&enum_i)?
-            .try_into()
-            .ok()
-            .and_then(ResultCode::from_code)
-            .ok_or(ReadBindError::InvalidResultCode)?
-    };
+    let enum_int = i
+        .try_into()
+        .ok()
+        .and_then(ResultCode::from_code)
+        .ok_or(ReadBindError::InvalidResultCode)?;
     let bind_status = match enum_int {
         ResultCode::Success => Ok(BindStatus::Finished),
         ResultCode::SaslBindInProgress => Ok(BindStatus::Pending),
@@ -135,16 +130,11 @@ impl From<std::io::Error> for ReadBindError {
         Self::Io(value)
     }
 }
-impl From<InvalidI32> for ReadBindError {
-    fn from(_: InvalidI32) -> Self {
-        Self::InvalidSchema
-    }
-}
 impl From<LengthError> for ReadBindError {
     fn from(value: LengthError) -> Self {
         match value {
             LengthError::Io(error) => Self::Io(error),
-            LengthError::Unbounded => Self::InvalidSchema,
+            LengthError::Unbounded | LengthError::OutOfRange => Self::InvalidSchema,
         }
     }
 }

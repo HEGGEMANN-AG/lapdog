@@ -2,11 +2,6 @@ use std::io::Read;
 
 use tokio::io::AsyncReadExt;
 
-use crate::{
-    integer::read_integer_body,
-    tag::{UNIVERSAL_INTEGER, UNIVERSAL_SEQUENCE},
-};
-
 pub(crate) trait ReadExt: Read {
     fn read_single_byte(&mut self) -> std::io::Result<u8> {
         let mut b = 0;
@@ -17,20 +12,6 @@ pub(crate) trait ReadExt: Read {
 impl<R: Read> ReadExt for R {}
 
 pub(crate) trait ReadLdap: ReadExt {
-    fn read_message_head(&mut self) -> Result<(i32, Vec<u8>), ReadLdapError> {
-        if self.read_single_byte().map_err(ReadLdapError::Io)? != UNIVERSAL_SEQUENCE {
-            return Err(ReadLdapError::InvalidSequenceTag);
-        }
-        let seq_length = self.read_length().map_err(ReadLdapError::Io)?.0.unwrap();
-        let (int_tag, message_id, int_len) = self.read_integer_unverified().map_err(ReadLdapError::Io)?;
-        if int_tag != UNIVERSAL_INTEGER {
-            panic!("not an integer");
-        }
-
-        let mut buffer = vec![0; seq_length - int_len];
-        self.read_exact(&mut buffer).map_err(ReadLdapError::Io)?;
-        Ok((message_id, buffer))
-    }
     /// Returns logical length of object, and then number of read bytes
     fn read_length(&mut self) -> std::io::Result<(Option<usize>, usize)> {
         let first = self.read_single_byte()?;
@@ -48,42 +29,10 @@ pub(crate) trait ReadLdap: ReadExt {
             }
         }
     }
-    fn read_integer_unverified(&mut self) -> std::io::Result<(u8, i32, usize)> {
-        let int_tag = self.read_single_byte()?;
-        let (Some(int_len), len_len) = self.read_length()? else {
-            panic!("Length undefined");
-        };
-        let mut intbuf = vec![0; int_len];
-        self.read_exact(&mut intbuf)?;
-        let i = read_integer_body(&intbuf).unwrap();
-        Ok((int_tag, i, 1 + len_len + int_len))
-    }
 }
 impl<T: Read> ReadLdap for T {}
 
-#[derive(Debug)]
-pub enum ReadLdapError {
-    InvalidSequenceTag,
-    Io(std::io::Error),
-}
-
 pub(crate) trait AsyncReadLdap: AsyncReadExt + Unpin {
-    async fn read_message_head(&mut self) -> Result<(i32, Vec<u8>), ReadLdapError> {
-        if self.read_u8().await.map_err(ReadLdapError::Io)? != UNIVERSAL_SEQUENCE {
-            return Err(ReadLdapError::InvalidSequenceTag);
-        }
-        let (seq_length, _) = self.read_length().await.map_err(ReadLdapError::Io)?;
-        let seq_length = seq_length.unwrap();
-        let (int_tag, message_id, int_len) =
-            self.read_integer_unverified().await.map_err(ReadLdapError::Io)?;
-        if int_tag != UNIVERSAL_INTEGER {
-            panic!("not an integer");
-        }
-
-        let mut buffer = vec![0; seq_length - int_len];
-        self.read_exact(&mut buffer).await.map_err(ReadLdapError::Io)?;
-        Ok((message_id, buffer))
-    }
     /// Returns logical length of object, and then number of read bytes
     async fn read_length(&mut self) -> std::io::Result<(Option<usize>, usize)> {
         let first = self.read_u8().await?;
@@ -101,16 +50,6 @@ pub(crate) trait AsyncReadLdap: AsyncReadExt + Unpin {
                 Ok((Some(usize::from_be_bytes(length)), 1 + length_bytes))
             }
         }
-    }
-    async fn read_integer_unverified(&mut self) -> std::io::Result<(u8, i32, usize)> {
-        let int_tag = self.read_u8().await?;
-        let (Some(int_len), len_len) = self.read_length().await? else {
-            panic!("Length undefined");
-        };
-        let mut intbuf = vec![0; int_len];
-        self.read_exact(&mut intbuf).await?;
-        let i = read_integer_body(&intbuf).unwrap();
-        Ok((int_tag, i, 1 + len_len + int_len))
     }
 }
 impl<T: AsyncReadExt + Unpin> AsyncReadLdap for T {}
