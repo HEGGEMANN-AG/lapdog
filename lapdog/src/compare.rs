@@ -4,7 +4,7 @@ use crate::{
     LdapConnection, ResponseProtocolOp, SendMessageError, WriteExt,
     attribute::AttributeValueAssertion,
     integer::read_integer_body,
-    length::read_length,
+    length::{LengthError, read_length},
     message::{ProtocolOp, ReadProtocolOpError, RequestProtocolOp},
     read::ReadExt,
     result::ResultCode,
@@ -79,7 +79,7 @@ pub(crate) fn read_response<R: Read>(mut r: R) -> Result<bool, ReadCompareError>
     }
     // LdapResult code
     let code = {
-        let enum_len = read_length(&mut r)?.ok_or(ReadCompareError::InvalidSchema)?;
+        let enum_len = read_length(&mut r)?;
         let mut enum_i = vec![0; enum_len];
         r.read_exact(&mut enum_i)?;
         read_integer_body(&enum_i)
@@ -98,7 +98,7 @@ pub(crate) fn read_response<R: Read>(mut r: R) -> Result<bool, ReadCompareError>
     if matched_dn_tag != OCTET_STRING {
         return Err(ReadCompareError::InvalidSchema);
     }
-    let matched_dn_len = read_length(&mut r)?.ok_or(ReadCompareError::InvalidSchema)?;
+    let matched_dn_len = read_length(&mut r)?;
     let mut matched_dn = vec![0; matched_dn_len];
     r.read_exact(&mut matched_dn)?;
     let Ok(_) = String::from_utf8(matched_dn) else {
@@ -109,7 +109,7 @@ pub(crate) fn read_response<R: Read>(mut r: R) -> Result<bool, ReadCompareError>
     if diagnostics_tag != OCTET_STRING {
         return Err(ReadCompareError::InvalidSchema);
     }
-    let diagnostics_len = read_length(&mut r)?.ok_or(ReadCompareError::InvalidSchema)?;
+    let diagnostics_len = read_length(&mut r)?;
     let mut message = vec![0; diagnostics_len];
     r.read_exact(&mut message)?;
     let diagnostics_message = String::from_utf8_lossy(&message).to_string();
@@ -127,5 +127,13 @@ pub(crate) enum ReadCompareError {
 impl From<std::io::Error> for ReadCompareError {
     fn from(value: std::io::Error) -> Self {
         Self::Io(value)
+    }
+}
+impl From<LengthError> for ReadCompareError {
+    fn from(value: LengthError) -> Self {
+        match value {
+            LengthError::Io(error) => Self::Io(error),
+            LengthError::Unbounded => Self::InvalidSchema,
+        }
     }
 }

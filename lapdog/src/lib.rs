@@ -19,6 +19,7 @@ mod compare;
 mod integer;
 mod length;
 mod message;
+mod parse;
 mod read;
 mod result;
 mod search;

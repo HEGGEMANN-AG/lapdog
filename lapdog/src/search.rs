@@ -3,7 +3,7 @@ use std::{collections::VecDeque, io::Read};
 use crate::{
     LdapConnection, ReceiveMessageError, WriteExt,
     integer::read_integer_body,
-    length::read_length,
+    length::{LengthError, read_length},
     message::RequestProtocolOp,
     read::ReadExt,
     result::ResultCode,
@@ -82,9 +82,7 @@ pub(crate) fn read_search<R: Read>(mut bytes: R) -> Result<SearchResult, SearchR
         return Err(SearchResultError::CouldNotReadSize);
     };
     let tag_number = tag::get_tag_number(tag);
-    let Ok(Some(msg_len)) = read_length(&mut bytes) else {
-        return Err(SearchResultError::CouldNotReadSize);
-    };
+    let msg_len = read_length(&mut bytes)?;
     let mut this_msg = vec![0; msg_len];
     let Ok(()) = bytes.read_exact(&mut this_msg) else {
         return Err(SearchResultError::InvalidSchema);
@@ -96,9 +94,7 @@ pub(crate) fn read_search<R: Read>(mut bytes: R) -> Result<SearchResult, SearchR
                 return Err(SearchResultError::InvalidSchema);
             };
             assert_eq!(name_tag, OCTET_STRING);
-            let Ok(Some(name_length)) = read_length(&mut bytes) else {
-                return Err(SearchResultError::InvalidSchema);
-            };
+            let name_length = read_length(&mut bytes)?;
             let mut name_bytes = vec![0; name_length];
             let Ok(()) = bytes
                 .read_exact(&mut name_bytes)
@@ -119,9 +115,7 @@ pub(crate) fn read_search<R: Read>(mut bytes: R) -> Result<SearchResult, SearchR
             {
                 return Err(SearchResultError::InvalidSchema);
             }
-            let Ok(Some(int_len)) = read_length(&mut bytes) else {
-                return Err(SearchResultError::InvalidSchema);
-            };
+            let int_len = read_length(&mut bytes)?;
             let mut int = vec![0; int_len];
             bytes
                 .read_exact(&mut int)
@@ -139,9 +133,7 @@ pub(crate) fn read_search<R: Read>(mut bytes: R) -> Result<SearchResult, SearchR
             {
                 return Err(SearchResultError::InvalidSchema);
             }
-            let Ok(Some(mdn_len)) = read_length(&mut bytes) else {
-                return Err(SearchResultError::InvalidSchema);
-            };
+            let mdn_len = read_length(&mut bytes)?;
             let mut matched_dn = vec![0; mdn_len];
             bytes
                 .read_exact(&mut matched_dn)
@@ -157,9 +149,7 @@ pub(crate) fn read_search<R: Read>(mut bytes: R) -> Result<SearchResult, SearchR
             {
                 return Err(SearchResultError::InvalidSchema);
             }
-            let Ok(Some(dm_len)) = read_length(&mut bytes) else {
-                return Err(SearchResultError::InvalidSchema);
-            };
+            let dm_len = read_length(&mut bytes)?;
             let mut diagnostics_message = vec![0; dm_len];
             bytes
                 .read_exact(&mut diagnostics_message)
@@ -181,7 +171,16 @@ pub(crate) fn read_search<R: Read>(mut bytes: R) -> Result<SearchResult, SearchR
 #[derive(Debug)]
 pub enum SearchResultError {
     CouldNotReadSize,
+    Io(std::io::Error),
     InvalidSchema,
+}
+impl From<LengthError> for SearchResultError {
+    fn from(value: LengthError) -> Self {
+        match value {
+            LengthError::Io(error) => Self::Io(error),
+            LengthError::Unbounded => Self::InvalidSchema,
+        }
+    }
 }
 
 #[derive(Debug)]

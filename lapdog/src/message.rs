@@ -12,7 +12,7 @@ use crate::{
     bind::{self, BindStatus},
     compare::{self, ReadCompareError},
     integer::read_integer_body,
-    length::{read_length, write_length},
+    length::{LengthError, read_length, write_length},
     read::ReadExt,
     result::ResultCode,
     search::{self, DerefPolicy, Filter, Scope},
@@ -35,10 +35,7 @@ impl<PO: ProtocolOp> Message<PO> {
         if !is_tag_triple(seq_tag, TagClass::Universal, PrimOrCons::Constructed, 0b00010000) {
             return Err(Error::InvalidMessageStructure);
         }
-        let Ok(Some(seq_length)) = read_length(&mut r) else {
-            return Err(Error::InvalidMessageStructure);
-        };
-
+        let seq_length = read_length(&mut r)?;
         let mut buffer = vec![0; seq_length];
         r.read_exact(&mut buffer).map_err(|_| Error::UnexpectedEOF)?;
         let mut buf_reader = buffer.as_slice();
@@ -46,9 +43,7 @@ impl<PO: ProtocolOp> Message<PO> {
         if !is_tag_triple(int_tag, TagClass::Universal, PrimOrCons::Primitive, 0x02) {
             return Err(Error::InvalidMessageStructure);
         }
-        let Ok(Some(integer_length)) = read_length(&mut buf_reader) else {
-            return Err(Error::InvalidMessageId);
-        };
+        let integer_length = read_length(&mut buf_reader)?;
         let (int, buf_reader) = buf_reader.split_at(integer_length);
 
         let message_id = NonZero::new(read_integer_body(int).map_err(|_| Error::InvalidMessageId)?);
@@ -146,9 +141,7 @@ impl ProtocolOp for ResponseProtocolOp {
             panic!("Bad choice primitive/constructed");
         };
         let tag = get_tag_number(choice_tag);
-        let len = read_length(&mut r)
-            .map_err(ReadProtocolOpError::Io)?
-            .ok_or(ReadProtocolOpError::InvalidSchema)?;
+        let len = read_length(&mut r)?;
         let message_body_reader = r.take(len as u64);
         match tag {
             1 => {
@@ -193,6 +186,14 @@ impl From<ReadCompareError> for ReadProtocolOpError {
             ReadCompareError::Io(error) => Self::Io(error),
             ReadCompareError::InvalidSchema => Self::InvalidSchema,
             ReadCompareError::ServerError { code, message } => Self::ProtocolError { code, message },
+        }
+    }
+}
+impl From<LengthError> for ReadProtocolOpError {
+    fn from(value: LengthError) -> Self {
+        match value {
+            LengthError::Io(error) => Self::Io(error),
+            LengthError::Unbounded => Self::InvalidSchema,
         }
     }
 }
@@ -288,6 +289,14 @@ pub enum Error {
 impl From<std::io::Error> for Error {
     fn from(_val: std::io::Error) -> Self {
         Self::UnexpectedEOF
+    }
+}
+impl From<LengthError> for Error {
+    fn from(value: LengthError) -> Self {
+        match value {
+            LengthError::Io(_) => Self::UnexpectedEOF,
+            LengthError::Unbounded => Self::InvalidMessageStructure,
+        }
     }
 }
 impl Display for Error {

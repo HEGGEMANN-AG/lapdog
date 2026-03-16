@@ -3,19 +3,20 @@ use std::io::{Read, Write};
 use crate::{WriteExt, read::ReadExt};
 
 /// Doesn't accept long-form lengths larger than size_of::<usize>() bytes
-pub fn read_length<R: Read>(mut r: R) -> std::io::Result<Option<usize>> {
-    let first = r.read_single_byte()?;
+pub fn read_length<R: Read>(mut r: R) -> Result<usize, LengthError> {
+    let first = r.read_single_byte().map_err(LengthError::Io)?;
     match first {
-        val @ 0..0x80 => Ok(Some(val.into())),
-        0x80 => Ok(None),
+        val @ 0..0x80 => Ok(val.into()),
+        0x80 => Err(LengthError::Unbounded),
         val @ 0x80.. => {
             let length_bytes = (val & 0x7F) as usize;
             if length_bytes > size_of::<usize>() {
                 unimplemented!()
             }
             let mut length = [0; size_of::<usize>()];
-            r.read_exact(&mut length[size_of::<usize>() - length_bytes..])?;
-            Ok(Some(usize::from_be_bytes(length)))
+            r.read_exact(&mut length[size_of::<usize>() - length_bytes..])
+                .map_err(LengthError::Io)?;
+            Ok(usize::from_be_bytes(length))
         }
     }
 }
@@ -40,6 +41,12 @@ pub fn write_length<W: Write>(mut w: W, length: usize) -> std::io::Result<usize>
     }
 }
 
+#[derive(Debug)]
+pub enum LengthError {
+    Io(std::io::Error),
+    Unbounded,
+}
+
 #[cfg(test)]
 mod test {
     use crate::length::read_length;
@@ -47,18 +54,18 @@ mod test {
     #[test]
     fn read_simple_length() {
         let ten_one = [0x0au8];
-        assert_eq!(read_length(ten_one.as_slice()).unwrap(), Some(10));
+        assert_eq!(read_length(ten_one.as_slice()).unwrap(), 10);
     }
 
     #[test]
     fn read_long_length() {
         let ten_two: [u8; 2] = [0x81, 0x0a];
-        assert_eq!(read_length(ten_two.as_slice()).unwrap(), Some(10));
+        assert_eq!(read_length(ten_two.as_slice()).unwrap(), 10);
     }
 
     #[test]
     fn read_max_length() {
         let max_long: [u8; 9] = [0x88, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF];
-        assert_eq!(read_length(max_long.as_slice()).unwrap(), Some(usize::MAX));
+        assert_eq!(read_length(max_long.as_slice()).unwrap(), usize::MAX);
     }
 }

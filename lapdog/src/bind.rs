@@ -6,7 +6,7 @@ use crate::{
     LDAP_VERSION, WriteExt,
     auth::{Authentication, SaslMechanism},
     integer::{InvalidI32, read_integer_body},
-    length::read_length,
+    length::{LengthError, read_length},
     read::ReadExt,
     result::ResultCode,
     tag::{
@@ -61,7 +61,7 @@ pub fn read_response<R: Read>(mut r: R) -> Result<BindResponse, ReadBindError> {
     }
     // LdapResult code
     let enum_int = {
-        let enum_len = read_length(&mut r)?.ok_or(ReadBindError::InvalidSchema)?;
+        let enum_len = read_length(&mut r)?;
         let mut enum_i = vec![0; enum_len];
         r.read_exact(&mut enum_i)?;
         read_integer_body(&enum_i)?
@@ -80,7 +80,7 @@ pub fn read_response<R: Read>(mut r: R) -> Result<BindResponse, ReadBindError> {
     if matched_dn_tag != OCTET_STRING {
         return Err(ReadBindError::InvalidSchema);
     }
-    let matched_dn_len = read_length(&mut r)?.ok_or(ReadBindError::InvalidSchema)?;
+    let matched_dn_len = read_length(&mut r)?;
     let mut matched_dn = vec![0; matched_dn_len];
     r.read_exact(&mut matched_dn)?;
     let Ok(matched_dn) = String::from_utf8(matched_dn) else {
@@ -91,7 +91,7 @@ pub fn read_response<R: Read>(mut r: R) -> Result<BindResponse, ReadBindError> {
     if diagnostics_tag != OCTET_STRING {
         return Err(ReadBindError::InvalidSchema);
     }
-    let diagnostics_len = read_length(&mut r)?.ok_or(ReadBindError::InvalidSchema)?;
+    let diagnostics_len = read_length(&mut r)?;
     let mut diagnostics_message = vec![0; diagnostics_len];
     r.read_exact(&mut diagnostics_message)?;
     let diagnostics_message = String::from_utf8_lossy(&diagnostics_message).to_string();
@@ -104,7 +104,7 @@ pub fn read_response<R: Read>(mut r: R) -> Result<BindResponse, ReadBindError> {
     let sasl_creds = match get_tag_number(referral_or_sasl_tag) {
         0x3 => panic!("unexpected referral"),
         SASL_CREDS => {
-            let sasl_len = read_length(&mut r)?.ok_or(ReadBindError::InvalidSchema)?;
+            let sasl_len = read_length(&mut r)?;
             if sasl_len == 0 {
                 None
             } else {
@@ -138,6 +138,14 @@ impl From<std::io::Error> for ReadBindError {
 impl From<InvalidI32> for ReadBindError {
     fn from(_: InvalidI32) -> Self {
         Self::InvalidSchema
+    }
+}
+impl From<LengthError> for ReadBindError {
+    fn from(value: LengthError) -> Self {
+        match value {
+            LengthError::Io(error) => Self::Io(error),
+            LengthError::Unbounded => Self::InvalidSchema,
+        }
     }
 }
 
