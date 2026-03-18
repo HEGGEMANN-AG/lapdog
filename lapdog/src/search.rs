@@ -290,6 +290,25 @@ impl From<LengthError> for SearchResultError {
         }
     }
 }
+impl std::error::Error for SearchResultError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::InvalidSchema | Self::CouldNotReadSize => None,
+            Self::Io(io) => Some(io),
+            Self::InvalidEntry(ie) => Some(ie),
+        }
+    }
+}
+impl Display for SearchResultError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidEntry(i) => write!(f, "Entry did not match struct: {i}"),
+            Self::CouldNotReadSize => write!(f, "failed to read message size"),
+            Self::InvalidSchema => write!(f, "Invalid LDAP message"),
+            Self::Io(io) => write!(f, "failed to read LDAP message: {io}"),
+        }
+    }
+}
 
 #[derive(Debug)]
 pub enum SearchResult<T = RawEntry> {
@@ -382,7 +401,7 @@ pub trait FromEntry: Sized {
 pub enum FailedToGetFromEntry {
     MissingField(&'static str),
     TooManyValues(&'static str),
-    FailedToParseField(&'static str, Box<dyn Error>),
+    FailedToParseField(&'static str, Box<dyn Error + 'static + Send>),
 }
 impl Error for FailedToGetFromEntry {}
 impl Display for FailedToGetFromEntry {
