@@ -36,7 +36,8 @@ impl StreamWriteHalf {
                 let mut buf = vec![0; 4 + encrypt.len()];
                 buf[..4].copy_from_slice(&(encrypt.len() as u32).to_be_bytes());
                 buf[4..].copy_from_slice(&encrypt);
-                write_half.write_all(&buf).await
+                write_half.write_all(&buf).await?;
+                write_half.flush().await
             }
         }
     }
