@@ -26,15 +26,21 @@ pub fn write_length<W: Write>(mut w: W, length: usize) -> std::io::Result<usize>
         w.write_single_byte(length as u8)?;
         Ok(1)
     } else {
-        let mut bytes = Vec::new();
+        let mut bytes = Vec::with_capacity(8);
         let mut len = length;
         while len > 0 {
             bytes.push((len & 0x7F) as u8);
             len >>= 8;
         }
+        while bytes.len() > 1 && bytes.last() == Some(&0) {
+            bytes.pop();
+        }
         bytes.reverse();
 
         let num_bytes = bytes.len();
+        if num_bytes > 126 {
+            panic!("Length is too large for BER encoding")
+        }
         w.write_single_byte(0x80 | num_bytes as u8)?;
         w.write_all(&bytes)?;
         Ok(1 + num_bytes)
