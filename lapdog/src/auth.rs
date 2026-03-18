@@ -14,12 +14,6 @@ impl Authentication<'_> {
             credentials: token.map(Cow::Borrowed),
         }
     }
-    pub fn sasl_negotiate<'t>(token: Option<&'t [u8]>) -> Authentication<'t> {
-        Authentication::Sasl {
-            mechanism: SaslMechanism::GSSSPNEGO,
-            credentials: token.map(Cow::Borrowed),
-        }
-    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
