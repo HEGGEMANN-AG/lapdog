@@ -1,9 +1,9 @@
-use std::io::Write;
+use std::{io::Write, ops::Not};
 
 use crate::{
     WriteExt,
     attribute::AttributeValueAssertion,
-    tag::{PrimitiveOrConstructed, TagClass},
+    tag::{OCTET_STRING, PrimitiveOrConstructed, TagClass, UNIVERSAL_BOOLEAN},
 };
 
 #[derive(Clone, Copy, Debug)]
@@ -31,19 +31,40 @@ impl DerefPolicy {
     }
 }
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Clone, Debug)]
 pub enum Filter<'a> {
-    And(&'a [&'a Filter<'a>]),
-    Or(&'a [&'a Filter<'a>]),
-    Not(&'a Filter<'a>),
+    And(Vec<Filter<'a>>),
+    Or(Vec<Filter<'a>>),
+    Not(Box<Filter<'a>>),
     Equal(AttributeValueAssertion<'a>),
     // substring
     GreaterOrEqual(AttributeValueAssertion<'a>),
     LessOrEqual(AttributeValueAssertion<'a>),
     Present(&'a str),
     ApproxMatch(AttributeValueAssertion<'a>),
+    ExtensibleMatch(MatchingRuleAssertion<'a>),
 }
 impl Filter<'_> {
+    pub fn and<'f>(filters: impl IntoIterator<Item = Filter<'f>>) -> Filter<'f> {
+        let filters = filters.into_iter().collect();
+        Filter::And(filters)
+    }
+    pub fn or<'f>(filters: impl IntoIterator<Item = Filter<'f>>) -> Filter<'f> {
+        let filters = filters.into_iter().collect();
+        Filter::Or(filters)
+    }
+    pub fn equal<'s>(attribute_desc: &'s str, value: &'s [u8]) -> Filter<'s> {
+        Filter::Equal(AttributeValueAssertion::new(attribute_desc, value))
+    }
+    pub fn greater_or_equal<'s>(attribute_desc: &'s str, value: &'s [u8]) -> Filter<'s> {
+        Filter::GreaterOrEqual(AttributeValueAssertion::new(attribute_desc, value))
+    }
+    pub fn less_or_equal<'s>(attribute_desc: &'s str, value: &'s [u8]) -> Filter<'s> {
+        Filter::LessOrEqual(AttributeValueAssertion::new(attribute_desc, value))
+    }
+    pub fn approximate_match<'s>(attribute_desc: &'s str, value: &'s [u8]) -> Filter<'s> {
+        Filter::ApproxMatch(AttributeValueAssertion::new(attribute_desc, value))
+    }
     fn tag_number(&self) -> u8 {
         match self {
             Filter::And(_) => 0,
@@ -54,6 +75,7 @@ impl Filter<'_> {
             Filter::LessOrEqual(_) => 6,
             Filter::Present(_) => 7,
             Filter::ApproxMatch(_) => 8,
+            Filter::ExtensibleMatch(_) => 9,
         }
     }
     fn primitive_or_constructed(&self) -> PrimitiveOrConstructed {
@@ -62,16 +84,16 @@ impl Filter<'_> {
             _ => PrimitiveOrConstructed::Constructed,
         }
     }
-    pub(super) fn write_into<W: Write>(&self, mut w: W) -> Result<(), std::io::Error> {
-        let tag = TagClass::ContextSpecific.into_bits()
-            | self.primitive_or_constructed().into_bit()
-            | self.tag_number();
-        w.write_single_byte(tag)?;
+    fn tag(&self) -> u8 {
+        TagClass::ContextSpecific.into_bits() | self.primitive_or_constructed().into_bit() | self.tag_number()
+    }
+    pub(super) fn write_into<W: Write>(&self, mut wout: W) -> Result<(), std::io::Error> {
+        let tag = self.tag();
 
         let mut v = Vec::new();
         match self {
             Self::And(f) | Self::Or(f) => {
-                for subfilter in f.iter() {
+                for subfilter in f {
                     subfilter.write_into(&mut v)?;
                 }
             }
@@ -84,10 +106,50 @@ impl Filter<'_> {
             Filter::Equal(ava)
             | Filter::GreaterOrEqual(ava)
             | Filter::LessOrEqual(ava)
-            | Filter::ApproxMatch(ava) => ava.write_into(&mut v)?,
+            | Filter::ApproxMatch(ava) => ava.write_body_into(&mut v)?,
+            Filter::ExtensibleMatch(em) => em.write_body_into(&mut v),
         };
-        w.write_ber_length(v.len())?;
-        w.write_all(&v)?;
+
+        wout.write_single_byte(tag)?;
+        wout.write_ber_length(v.len())?;
+        wout.write_all(&v)?;
+
         Ok(())
+    }
+}
+impl Not for Filter<'_> {
+    type Output = Self;
+    fn not(self) -> Self::Output {
+        Self::Not(Box::new(self))
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct MatchingRuleAssertion<'a> {
+    pub matching_rule: Option<&'a str>,
+    pub r#type: Option<&'a str>,
+    pub match_value: &'a [u8],
+    pub dn_attributes: Option<bool>,
+}
+impl MatchingRuleAssertion<'_> {
+    fn write_body_into(&self, w: &mut Vec<u8>) {
+        if let Some(mr) = self.matching_rule {
+            w.push(OCTET_STRING);
+            w.write_ber_length(mr.len()).unwrap();
+            w.extend_from_slice(mr.as_bytes());
+        }
+        if let Some(t) = self.r#type {
+            w.push(OCTET_STRING);
+            w.write_ber_length(t.len()).unwrap();
+            w.extend_from_slice(t.as_bytes());
+        }
+        w.push(OCTET_STRING);
+        w.write_ber_length(self.match_value.len()).unwrap();
+        w.extend_from_slice(self.match_value);
+        if let Some(b) = self.dn_attributes {
+            w.push(UNIVERSAL_BOOLEAN);
+            w.write_ber_length(1).unwrap();
+            w.push(if b { 0xFF } else { 0x00 });
+        }
     }
 }
