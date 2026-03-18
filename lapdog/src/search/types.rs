@@ -3,7 +3,7 @@ use std::{io::Write, ops::Not};
 use crate::{
     WriteExt,
     attribute::AttributeValueAssertion,
-    tag::{OCTET_STRING, PrimitiveOrConstructed, TagClass, UNIVERSAL_BOOLEAN},
+    tag::{PrimitiveOrConstructed, TagClass},
 };
 
 #[derive(Clone, Copy, Debug)]
@@ -131,23 +131,33 @@ pub struct MatchingRuleAssertion<'a> {
     pub match_value: &'a [u8],
     pub dn_attributes: Option<bool>,
 }
+
+const MATCHING_RULE: u8 =
+    TagClass::ContextSpecific.into_bits() | PrimitiveOrConstructed::Primitive.into_bit() | 0x1;
+const ATTR_DESC_TYPE: u8 =
+    TagClass::ContextSpecific.into_bits() | PrimitiveOrConstructed::Primitive.into_bit() | 0x2;
+const MATCH_VALUE: u8 =
+    TagClass::ContextSpecific.into_bits() | PrimitiveOrConstructed::Primitive.into_bit() | 0x3;
+const DN_ATTRIBUTES: u8 =
+    TagClass::ContextSpecific.into_bits() | PrimitiveOrConstructed::Primitive.into_bit() | 0x4;
+
 impl MatchingRuleAssertion<'_> {
     fn write_body_into(&self, w: &mut Vec<u8>) {
         if let Some(mr) = self.matching_rule {
-            w.push(OCTET_STRING);
+            w.push(MATCHING_RULE);
             w.write_ber_length(mr.len()).unwrap();
             w.extend_from_slice(mr.as_bytes());
         }
         if let Some(t) = self.r#type {
-            w.push(OCTET_STRING);
+            w.push(ATTR_DESC_TYPE);
             w.write_ber_length(t.len()).unwrap();
             w.extend_from_slice(t.as_bytes());
         }
-        w.push(OCTET_STRING);
+        w.push(MATCH_VALUE);
         w.write_ber_length(self.match_value.len()).unwrap();
         w.extend_from_slice(self.match_value);
         if let Some(b) = self.dn_attributes {
-            w.push(UNIVERSAL_BOOLEAN);
+            w.push(DN_ATTRIBUTES);
             w.write_ber_length(1).unwrap();
             w.push(if b { 0xFF } else { 0x00 });
         }
