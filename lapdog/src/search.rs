@@ -349,7 +349,7 @@ pub(crate) fn write_search<'a>(
 fn write_integer_with_tag(base: &mut Vec<u8>, tag: u8, int: i32) {
     base.push(tag);
     let mut int_bytes = Vec::new();
-    int_bytes.write_ber_integer(int).unwrap();
+    int_bytes.write_ber_integer_body(int).unwrap();
     base.write_ber_length(int_bytes.len()).unwrap();
     base.extend(int_bytes);
 }

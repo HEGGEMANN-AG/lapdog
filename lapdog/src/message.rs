@@ -65,7 +65,7 @@ impl<PO: ProtocolOp> Message<PO> {
 
         let id = self.message_id.map(Into::into).unwrap_or_default();
         let mut int_b = Vec::new();
-        int_b.write_ber_integer(id).expect("infallible");
+        int_b.write_ber_integer_body(id).expect("infallible");
 
         write_length(&mut ldap_message, int_b.len()).expect("infallible");
         ldap_message.extend_from_slice(&int_b);

@@ -30,7 +30,7 @@ pub fn read_integer_body(arr: &[u8]) -> Result<i32, InvalidI32> {
     }
 }
 
-pub fn write_integer<W: Write>(i: i32, mut w: W) -> std::io::Result<usize> {
+pub fn write_integer_body<W: Write>(i: i32, mut w: W) -> std::io::Result<usize> {
     if i == 0 {
         w.write_single_byte(0)?;
         return Ok(1);
@@ -63,7 +63,7 @@ impl Display for InvalidI32 {
 
 #[cfg(test)]
 mod test {
-    use crate::integer::{InvalidI32, write_integer};
+    use crate::integer::{InvalidI32, write_integer_body};
 
     use super::read_integer_body;
     #[test]
@@ -92,7 +92,7 @@ mod test {
 
     fn write_to_vec(i: i32) -> Vec<u8> {
         let mut v = Vec::new();
-        write_integer(i, &mut v).unwrap();
+        write_integer_body(i, &mut v).unwrap();
         v
     }
 

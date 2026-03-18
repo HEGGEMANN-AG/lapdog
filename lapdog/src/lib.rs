@@ -284,9 +284,8 @@ trait WriteExt: Write {
         crate::length::write_length(self, length)?;
         Ok(())
     }
-    fn write_ber_integer(&mut self, i: i32) -> std::io::Result<()> {
-        crate::integer::write_integer(i, self)?;
-        Ok(())
+    fn write_ber_integer_body(&mut self, i: i32) -> std::io::Result<usize> {
+        crate::integer::write_integer_body(i, self)
     }
 }
 impl<W: Write> WriteExt for W {}
