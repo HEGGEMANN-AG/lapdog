@@ -18,12 +18,12 @@ use crate::{
 #[cfg(feature = "kerberos")]
 pub mod kerberos;
 
-pub fn write_bind(auth: &Authentication) -> Vec<u8> {
+pub(crate) fn write_bind(auth: &Authentication) -> Vec<u8> {
     let mut bind_msg = Vec::new();
     // version
     bind_msg.push(UNIVERSAL_INTEGER);
     bind_msg.write_ber_length(1).expect("infallible");
-    bind_msg.write_ber_integer(LDAP_VERSION).expect("infallible");
+    bind_msg.write_ber_integer_body(LDAP_VERSION).expect("infallible");
 
     // name
     bind_msg.push(TagClass::Universal.into_bits() | PrimOrCons::Primitive.into_bit() | 0x04);
@@ -54,7 +54,7 @@ pub fn write_bind(auth: &Authentication) -> Vec<u8> {
     bind_msg
 }
 
-pub fn read_response<R: Read>(mut r: R) -> Result<BindResponse, ReadBindError> {
+pub(crate) fn read_response<R: Read>(mut r: R) -> Result<BindResponse, ReadBindError> {
     let tag = r.read_single_byte()?;
     if tag != UNIVERSAL_ENUMERATED {
         return Err(ReadBindError::InvalidSchema);
@@ -124,7 +124,7 @@ pub fn read_response<R: Read>(mut r: R) -> Result<BindResponse, ReadBindError> {
 }
 
 #[derive(Debug)]
-pub enum ReadBindError {
+pub(crate) enum ReadBindError {
     Io(std::io::Error),
     BindError { code: ResultCode, message: String },
     InvalidResultCode,
@@ -150,13 +150,13 @@ impl From<LengthError> for ReadBindError {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub enum BindStatus {
+pub(crate) enum BindStatus {
     Finished,
     Pending,
 }
 
 #[derive(Debug)]
-pub struct BindResponse {
+pub(crate) struct BindResponse {
     pub bind_status: BindStatus,
     pub sasl_creds: Option<Vec<u8>>,
     #[expect(dead_code)]
