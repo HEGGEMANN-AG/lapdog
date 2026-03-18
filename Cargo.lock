@@ -267,6 +267,7 @@ name = "lapdog"
 version = "0.7.0"
 dependencies = [
  "kenobi",
+ "lapdog-derive",
  "native-tls",
  "tokio",
  "tokio-native-tls",

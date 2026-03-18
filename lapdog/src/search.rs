@@ -1,22 +1,37 @@
-use std::{collections::VecDeque, io::Read};
+use std::{collections::VecDeque, error::Error, fmt::Display, io::Read, marker::PhantomData};
 
 use crate::{
     LdapConnection, ReceiveMessageError, WriteExt,
     integer::read_integer_body,
     length::{LengthError, read_length},
     message::RequestProtocolOp,
-    read::ReadExt,
+    read::{ReadExt, ReadLdap},
     result::ResultCode,
     tag::{
         self, OCTET_STRING, UNIVERSAL_BOOLEAN, UNIVERSAL_ENUMERATED, UNIVERSAL_INTEGER, UNIVERSAL_SEQUENCE,
+        UNIVERSAL_SET,
     },
 };
 
+#[cfg(feature = "from_octets")]
+mod impl_traits;
 mod types;
+#[cfg(feature = "derive")]
+pub use lapdog_derive::Entry;
 use tokio::sync::{mpsc::UnboundedReceiver, oneshot::Sender};
 pub use types::{DerefPolicy, Filter, Scope};
 
 impl LdapConnection {
+    pub async fn search_all(
+        &self,
+        base_object: &str,
+        scope: Scope,
+        deref_policy: DerefPolicy,
+        filter: Filter<'_>,
+    ) -> SearchResults {
+        self.search_raw(base_object, scope, deref_policy, filter, vec!["*"])
+            .await
+    }
     pub async fn search<'a>(
         &self,
         base_object: &str,
@@ -25,6 +40,31 @@ impl LdapConnection {
         filter: Filter<'_>,
         attributes: impl IntoIterator<Item = &'a str>,
     ) -> SearchResults {
+        self.search_raw(base_object, scope, deref_policy, filter, attributes)
+            .await
+    }
+    pub async fn search_as<Output: FromEntry>(
+        &self,
+        base_object: &str,
+        scope: Scope,
+        deref_policy: DerefPolicy,
+        filter: Filter<'_>,
+    ) -> SearchResults<Output> {
+        let attributes = match Output::attributes() {
+            None => vec!["*"],
+            Some(v) => v.collect(),
+        };
+        self.search_raw(base_object, scope, deref_policy, filter, attributes)
+            .await
+    }
+    async fn search_raw<'a, Output: FromEntry>(
+        &self,
+        base_object: &str,
+        scope: Scope,
+        deref_policy: DerefPolicy,
+        filter: Filter<'_>,
+        attributes: impl IntoIterator<Item = &'a str>,
+    ) -> SearchResults<Output> {
         let attributes: Vec<&str> = attributes.into_iter().collect();
         let proto = RequestProtocolOp::Search {
             base_object,
@@ -38,24 +78,26 @@ impl LdapConnection {
             incoming_messages,
             buffer: Default::default(),
             done: Some(done),
+            _e: PhantomData,
         }
     }
 }
 
-pub struct SearchResults {
+pub struct SearchResults<Output = RawEntry> {
     incoming_messages: UnboundedReceiver<Result<Vec<u8>, ReceiveMessageError>>,
     buffer: VecDeque<u8>,
     done: Option<Sender<()>>,
+    _e: PhantomData<Output>,
 }
-impl SearchResults {
-    pub async fn next(&mut self) -> Option<Result<SearchResult, SearchResultError>> {
+impl<Output: FromEntry> SearchResults<Output> {
+    pub async fn next(&mut self) -> Option<Result<SearchResult<Output>, SearchResultError>> {
         let res = if !self.buffer.is_empty() {
-            read_search(&mut self.buffer)
+            read_search_as::<Output, _>(&mut self.buffer)
         } else {
             match self.incoming_messages.recv().await {
                 Some(Ok(body)) => {
                     self.buffer = body.into();
-                    read_search(&mut self.buffer)
+                    read_search_as::<Output, _>(&mut self.buffer)
                 }
                 Some(Err(ReceiveMessageError::ConnectionClosed)) | None => {
                     if let Some(shutdown) = self.done.take() {
@@ -77,7 +119,9 @@ impl SearchResults {
     }
 }
 
-pub(crate) fn read_search<R: Read>(mut bytes: R) -> Result<SearchResult, SearchResultError> {
+pub(crate) fn read_search_as<E: FromEntry, R: Read>(
+    mut bytes: R,
+) -> Result<SearchResult<E>, SearchResultError> {
     let Ok(tag) = bytes.read_single_byte() else {
         return Err(SearchResultError::CouldNotReadSize);
     };
@@ -90,10 +134,9 @@ pub(crate) fn read_search<R: Read>(mut bytes: R) -> Result<SearchResult, SearchR
     let mut bytes = this_msg.as_slice();
     match tag_number {
         4 => {
-            let Ok(name_tag) = bytes.read_single_byte() else {
+            let Ok(OCTET_STRING) = bytes.read_single_byte() else {
                 return Err(SearchResultError::InvalidSchema);
             };
-            assert_eq!(name_tag, OCTET_STRING);
             let name_length = read_length(&mut bytes)?;
             let mut name_bytes = vec![0; name_length];
             let Ok(()) = bytes
@@ -105,7 +148,71 @@ pub(crate) fn read_search<R: Read>(mut bytes: R) -> Result<SearchResult, SearchR
             let Ok(object_name) = String::from_utf8(name_bytes) else {
                 return Err(SearchResultError::InvalidSchema);
             };
-            Ok(SearchResult::Entry { object_name })
+            let Ok(UNIVERSAL_SEQUENCE) = bytes.read_single_byte() else {
+                return Err(SearchResultError::InvalidSchema);
+            };
+            let (Some(attr_list_len), _) = bytes.read_length().map_err(SearchResultError::Io)? else {
+                return Err(SearchResultError::InvalidSchema);
+            };
+            assert_eq!(bytes.len(), attr_list_len);
+            let mut attributes = Vec::<Attribute>::new();
+            while !bytes.is_empty() {
+                let Ok(UNIVERSAL_SEQUENCE) = bytes.read_single_byte() else {
+                    return Err(SearchResultError::InvalidSchema);
+                };
+                let (Some(attr_seq_len), _) = bytes.read_length().map_err(SearchResultError::Io)? else {
+                    return Err(SearchResultError::InvalidSchema);
+                };
+                let Some((mut attr_reader, rest)) = bytes.split_at_checked(attr_seq_len) else {
+                    return Err(SearchResultError::InvalidSchema);
+                };
+                bytes = rest;
+
+                let Ok(OCTET_STRING) = attr_reader.read_single_byte() else {
+                    return Err(SearchResultError::InvalidSchema);
+                };
+                let (Some(strlen), _) = attr_reader.read_length().map_err(SearchResultError::Io)? else {
+                    return Err(SearchResultError::InvalidSchema);
+                };
+                let mut attr_type = String::new();
+                attr_reader
+                    .by_ref()
+                    .take(strlen as u64)
+                    .read_to_string(&mut attr_type)
+                    .map_err(SearchResultError::Io)?;
+
+                let mut attr_values = Vec::new();
+                let Ok(UNIVERSAL_SET) = attr_reader.read_single_byte() else {
+                    return Err(SearchResultError::InvalidSchema);
+                };
+                let (Some(_setlen), _) = attr_reader.read_length().map_err(SearchResultError::Io)? else {
+                    return Err(SearchResultError::InvalidSchema);
+                };
+                while !attr_reader.is_empty() {
+                    let Ok(OCTET_STRING) = attr_reader.read_single_byte() else {
+                        return Err(SearchResultError::InvalidSchema);
+                    };
+                    let (Some(attr_value_len), _) =
+                        attr_reader.read_length().map_err(SearchResultError::Io)?
+                    else {
+                        return Err(SearchResultError::InvalidSchema);
+                    };
+                    let mut buf = vec![0; attr_value_len];
+                    attr_reader.read_exact(&mut buf).map_err(SearchResultError::Io)?;
+                    attr_values.push(buf);
+                }
+                attributes.push(Attribute {
+                    r#type: attr_type,
+                    values: attr_values,
+                });
+            }
+            let raw_enty = RawEntry {
+                object_name,
+                attributes,
+            };
+            E::from_entry(raw_enty)
+                .map_err(SearchResultError::InvalidEntry)
+                .map(SearchResult::Entry)
         }
         5 => {
             if bytes
@@ -172,6 +279,7 @@ pub(crate) fn read_search<R: Read>(mut bytes: R) -> Result<SearchResult, SearchR
 pub enum SearchResultError {
     CouldNotReadSize,
     Io(std::io::Error),
+    InvalidEntry(FailedToGetFromEntry),
     InvalidSchema,
 }
 impl From<LengthError> for SearchResultError {
@@ -184,10 +292,8 @@ impl From<LengthError> for SearchResultError {
 }
 
 #[derive(Debug)]
-pub enum SearchResult {
-    Entry {
-        object_name: String,
-    },
+pub enum SearchResult<T = RawEntry> {
+    Entry(T),
     Reference,
     Done {
         code: ResultCode,
@@ -246,4 +352,67 @@ fn write_integer_with_tag(base: &mut Vec<u8>, tag: u8, int: i32) {
     int_bytes.write_ber_integer(int).unwrap();
     base.write_ber_length(int_bytes.len()).unwrap();
     base.extend(int_bytes);
+}
+
+#[derive(Debug)]
+pub struct RawEntry {
+    pub object_name: String,
+    pub attributes: Vec<Attribute>,
+}
+#[derive(Debug)]
+pub struct Attribute {
+    pub r#type: String,
+    pub values: Vec<Vec<u8>>,
+}
+impl FromEntry for RawEntry {
+    fn from_entry(entry: RawEntry) -> Result<Self, FailedToGetFromEntry> {
+        Ok(entry)
+    }
+}
+
+pub trait FromEntry: Sized {
+    fn from_entry(entry: RawEntry) -> Result<Self, FailedToGetFromEntry>;
+
+    #[must_use]
+    fn attributes() -> Option<impl Iterator<Item = &'static str>> {
+        None::<std::iter::Empty<&str>>
+    }
+}
+#[derive(Debug)]
+pub enum FailedToGetFromEntry {
+    MissingField(&'static str),
+    TooManyValues(&'static str),
+    FailedToParseField(&'static str, Box<dyn Error>),
+}
+impl Error for FailedToGetFromEntry {}
+impl Display for FailedToGetFromEntry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::MissingField(field) => write!(f, "Server did not send attribute \"{field}\""),
+            Self::FailedToParseField(field, error) => {
+                write!(f, "Failed to parse attribute \"{field}\": {error}")
+            }
+            Self::TooManyValues(field) => write!(f, "more than one value in attribute \"{field}\""),
+        }
+    }
+}
+
+#[cfg(feature = "from_octets")]
+/// Octet string parsing logic for single value
+///
+/// This is the default trait to implement to work for the derive(Entry) macro.
+/// If multiple values are present in a directory attribute, the deserialization will fail
+pub trait FromOctetString: Sized {
+    type Err: Error;
+    fn from_octet_string(bytes: &[u8]) -> Result<Self, Self::Err>;
+}
+
+#[cfg(feature = "from_octets")]
+/// Grabs multiple values from the reference attribute.
+///
+/// If any parse in the attributes fails, it will error out. To get partial parses, wrap the inner type into a type with infallible
+/// octet string deserialization
+pub trait FromMultipleOctetStrings: Sized {
+    type Err: Error;
+    fn from_multiple_octet_strings<'a>(values: impl Iterator<Item = &'a [u8]>) -> Result<Self, Self::Err>;
 }
