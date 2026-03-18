@@ -27,12 +27,12 @@ tokio-native-tls = { version = "0.3.1", optional = true }
 [features]
 native-tls = ["dep:native-tls", "dep:tokio-native-tls", "kenobi?/native-tls"]
 kerberos = ["dep:kenobi"]
-derive = []
+derive = ["dep:lapdog-derive", "from_octets"]
 from_octets = []
 
 [[example]]
 name = "bind_kerberos_search"
-required_features = ["derive", "kerberos"]
+required-features = ["derive", "kerberos"]
 
 [dev-dependencies]
 tokio = { version = "1.50.0", features = ["rt-multi-thread", "time"] }
