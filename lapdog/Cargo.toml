@@ -32,7 +32,7 @@ from_octets = []
 
 [[example]]
 name = "bind_kerberos_search"
-features = ["derive", "kerberos"]
+required_features = ["derive", "kerberos"]
 
 [dev-dependencies]
 tokio = { version = "1.50.0", features = ["rt-multi-thread", "time"] }
