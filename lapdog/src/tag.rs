@@ -63,12 +63,6 @@ pub fn get_tag_number(b: u8) -> u8 {
     b & 0x1F
 }
 
-pub fn is_tag_triple(b: u8, class: TagClass, poc: PrimitiveOrConstructed, number: u8) -> bool {
-    TagClass::from_bits(b) == class
-        && PrimitiveOrConstructed::from_bit(b) == poc
-        && get_tag_number(b) == number
-}
-
 #[cfg(test)]
 mod test {
     use crate::tag::{PrimitiveOrConstructed, TagClass, get_tag_number};
