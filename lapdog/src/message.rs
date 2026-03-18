@@ -1,24 +1,19 @@
 use std::{
-    fmt::Display,
     io::{Read, Write},
     num::NonZero,
 };
-
-use tokio::io::AsyncWriteExt;
 
 use crate::{
     WriteExt, attribute,
     auth::Authentication,
     bind::{self, BindStatus},
     compare::{self, ReadCompareError},
-    integer::read_integer_body,
-    length::{LengthError, read_length, write_length},
+    length::{LengthError, read_length},
     read::ReadExt,
     result::ResultCode,
     search::{self, DerefPolicy, Filter, Scope},
     tag::{
-        PrimitiveOrConstructed as PrimOrCons, TagClass, UNIVERSAL_INTEGER, UNIVERSAL_SEQUENCE,
-        get_tag_number, is_tag_triple,
+        PrimitiveOrConstructed as PrimOrCons, TagClass, UNIVERSAL_INTEGER, UNIVERSAL_SEQUENCE, get_tag_number,
     },
 };
 
@@ -29,31 +24,7 @@ pub struct Message<ProtocolOp> {
     pub(crate) message_id: Option<NonZero<i32>>,
     pub(crate) protocol_op: ProtocolOp,
 }
-impl<PO: ProtocolOp> Message<PO> {
-    pub fn read_from<R: Read>(mut r: R) -> Result<Self, Error> {
-        let seq_tag = r.read_single_byte()?;
-        if !is_tag_triple(seq_tag, TagClass::Universal, PrimOrCons::Constructed, 0b00010000) {
-            return Err(Error::InvalidMessageStructure);
-        }
-        let seq_length = read_length(&mut r)?;
-        let mut buffer = vec![0; seq_length];
-        r.read_exact(&mut buffer).map_err(|_| Error::UnexpectedEOF)?;
-        let mut buf_reader = buffer.as_slice();
-        let int_tag = buf_reader.read_single_byte().map_err(|_| Error::UnexpectedEOF)?;
-        if !is_tag_triple(int_tag, TagClass::Universal, PrimOrCons::Primitive, 0x02) {
-            return Err(Error::InvalidMessageStructure);
-        }
-        let integer_length = read_length(&mut buf_reader)?;
-        let (int, buf_reader) = buf_reader.split_at(integer_length);
-
-        let message_id = NonZero::new(read_integer_body(int).map_err(|_| Error::InvalidMessageId)?);
-
-        let protocol_op = PO::read_from(buf_reader).map_err(Error::ReadProtocolOpError)?;
-        Ok(Message {
-            message_id,
-            protocol_op,
-        })
-    }
+impl RequestMessage<'_> {
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut buffer = Vec::new();
         buffer.push(UNIVERSAL_SEQUENCE);
@@ -67,7 +38,7 @@ impl<PO: ProtocolOp> Message<PO> {
         let mut int_b = Vec::new();
         int_b.write_ber_integer_body(id).expect("infallible");
 
-        write_length(&mut ldap_message, int_b.len()).expect("infallible");
+        ldap_message.write_ber_length(int_b.len()).expect("infallible");
         ldap_message.extend_from_slice(&int_b);
 
         // Protocol Op
@@ -75,21 +46,14 @@ impl<PO: ProtocolOp> Message<PO> {
             .write_into(&mut ldap_message)
             .expect("infallible");
 
-        write_length(&mut buffer, ldap_message.len()).expect("infallible");
+        buffer.write_ber_length(ldap_message.len()).expect("infallible");
         buffer.extend(&ldap_message);
         buffer
-    }
-    pub fn write_to<W: Write>(&self, mut w: W) -> std::io::Result<()> {
-        Write::write_all(&mut w, &self.to_bytes())?;
-        Ok(())
-    }
-    pub async fn write_to_async<W: AsyncWriteExt + Unpin>(&self, w: &mut W) -> std::io::Result<()> {
-        w.write_all(&self.to_bytes()).await?;
-        Ok(())
     }
 }
 
 #[derive(Clone, Debug)]
+#[allow(dead_code)]
 pub enum ResponseProtocolOp {
     Bind {
         status: BindStatus,
@@ -123,12 +87,6 @@ impl ProtocolOp for ResponseProtocolOp {
             Self::Extended => 24,
             Self::Intermediate => 25,
         }
-    }
-    fn write_into<W: Write>(&self, mut w: W) -> std::io::Result<()> {
-        w.write_single_byte(
-            TagClass::Application.into_bits() | PrimOrCons::Primitive.into_bit() | self.to_tag(),
-        )?;
-        todo!()
     }
     fn read_from<R: Read>(mut r: R) -> Result<Self, ReadProtocolOpError> {
         let choice_tag = r.read_single_byte().map_err(ReadProtocolOpError::Io)?;
@@ -199,6 +157,7 @@ impl From<LengthError> for ReadProtocolOpError {
 }
 
 #[derive(Clone, Debug)]
+#[allow(dead_code)]
 pub enum RequestProtocolOp<'a> {
     /// Bind-dn usually empty for SASL bind
     Bind {
@@ -241,6 +200,8 @@ impl ProtocolOp for RequestProtocolOp<'_> {
     fn read_from<R: Read>(_r: R) -> Result<Self, ReadProtocolOpError> {
         unimplemented!()
     }
+}
+impl RequestProtocolOp<'_> {
     fn write_into<W: Write>(&self, mut w: W) -> std::io::Result<()> {
         // Sequence tag
         let req_tag = TagClass::Application.into_bits() | PrimOrCons::Constructed.into_bit() | self.to_tag();
@@ -261,12 +222,12 @@ impl ProtocolOp for RequestProtocolOp<'_> {
                 base_object,
                 *scope,
                 *deref_policy,
-                *filter,
+                filter,
                 attributes.iter().copied(),
             ),
             _ => todo!(),
         };
-        write_length(&mut w, proto_op_inner.len())?;
+        w.write_ber_length(proto_op_inner.len())?;
         w.write_all(&proto_op_inner)?;
         Ok(())
     }
@@ -275,38 +236,4 @@ impl ProtocolOp for RequestProtocolOp<'_> {
 pub trait ProtocolOp: Sized {
     fn to_tag(&self) -> u8;
     fn read_from<R: Read>(r: R) -> Result<Self, ReadProtocolOpError>;
-    fn write_into<W: Write>(&self, w: W) -> std::io::Result<()>;
-}
-
-#[derive(Debug)]
-pub enum Error {
-    InvalidMessageId,
-    InvalidMessageStructure,
-    InvalidProtocolOp,
-    ReadProtocolOpError(ReadProtocolOpError),
-    UnexpectedEOF,
-}
-impl From<std::io::Error> for Error {
-    fn from(_val: std::io::Error) -> Self {
-        Self::UnexpectedEOF
-    }
-}
-impl From<LengthError> for Error {
-    fn from(value: LengthError) -> Self {
-        match value {
-            LengthError::Io(_) => Self::UnexpectedEOF,
-            LengthError::Unbounded => Self::InvalidMessageStructure,
-        }
-    }
-}
-impl Display for Error {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::InvalidMessageId => write!(f, "Invalid message ID"),
-            Self::InvalidMessageStructure => write!(f, "Invalid message structure"),
-            Self::InvalidProtocolOp => write!(f, "Invalid protocol op"),
-            Self::ReadProtocolOpError(r) => write!(f, "Error reading protocol op: {r:?}"),
-            Self::UnexpectedEOF => write!(f, "Unexpected end of stream"),
-        }
-    }
 }
