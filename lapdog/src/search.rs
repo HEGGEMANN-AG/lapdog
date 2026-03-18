@@ -19,7 +19,7 @@ mod types;
 #[cfg(feature = "derive")]
 pub use lapdog_derive::Entry;
 use tokio::sync::{mpsc::UnboundedReceiver, oneshot::Sender};
-pub use types::{DerefPolicy, Filter, Scope};
+pub use types::{DerefPolicy, Filter, MatchingRuleAssertion, Scope};
 
 impl LdapConnection {
     pub async fn search_all(
@@ -306,7 +306,7 @@ pub(crate) fn write_search<'a>(
     base_object: &str,
     scope: Scope,
     deref_policy: DerefPolicy,
-    filter: Filter<'_>,
+    filter: &Filter<'_>,
     attributes: impl IntoIterator<Item = &'a str>,
 ) -> Vec<u8> {
     let mut out = Vec::new();
