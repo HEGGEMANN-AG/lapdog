@@ -1,5 +1,6 @@
 use std::{
     collections::HashMap,
+    fmt::{Display, Formatter},
     io::{ErrorKind, Write},
     num::NonZero,
     sync::{
@@ -96,8 +97,8 @@ pub struct LdapConnection {
     inflight_requests: Arc<Mutex<InFlightRequests>>,
 }
 impl LdapConnection {
-    pub async fn new(addr: impl ToSocketAddrs, config: &StreamConfig) -> Self {
-        let stream = TcpStream::connect(addr).await.unwrap();
+    pub async fn new(addr: impl ToSocketAddrs, config: &StreamConfig) -> Result<Self, ConnectError> {
+        let stream = TcpStream::connect(addr).await.map_err(ConnectError::Io)?;
         let (read, write) = match config {
             StreamConfig::Plain => Stream::Plain(stream),
             #[cfg(feature = "native-tls")]
@@ -105,7 +106,7 @@ impl LdapConnection {
                 let s = tokio_native_tls::TlsConnector::from(connector.clone())
                     .connect(domain, stream)
                     .await
-                    .unwrap();
+                    .map_err(ConnectError::Tls)?;
                 Stream::NativeTls(s)
             }
         }
@@ -124,7 +125,7 @@ impl LdapConnection {
         };
         let fut = Self::drive(read, inflight_requests, give_read_half, shutdown);
         tokio::spawn(fut);
-        new
+        Ok(new)
     }
     async fn send_message(
         &self,
@@ -247,6 +248,32 @@ impl Drop for LdapConnection {
         };
     }
 }
+
+#[derive(Debug)]
+pub enum ConnectError {
+    Io(std::io::Error),
+    #[cfg(feature = "native-tls")]
+    Tls(native_tls::Error),
+}
+impl std::error::Error for ConnectError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Io(io) => Some(io),
+            #[cfg(feature = "native-tls")]
+            Self::Tls(tls) => Some(tls),
+        }
+    }
+}
+impl Display for ConnectError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Io(io) => write!(f, "Failed to connect: {io}"),
+            #[cfg(feature = "native-tls")]
+            Self::Tls(tls) => write!(f, "Failed to setup secure channel: {tls}"),
+        }
+    }
+}
+
 enum IncomingMessage {
     Message(Vec<u8>),
     MessageReceiver(MReceiver<Result<Vec<u8>, ReceiveMessageError>>, OSender<()>),
@@ -308,7 +335,9 @@ pub mod test {
         let target_spn = std::env::var("LAPDOG_TARGET_SPN").ok();
         let own_spn = std::env::var("LAPDOG_OWN_SPN").ok();
         let cred = Credentials::outbound(own_spn.as_deref(), mech).unwrap();
-        let mut connection = LdapConnection::new(&(server, LDAP_PORT), &StreamConfig::default()).await;
+        let mut connection = LdapConnection::new(&(server, LDAP_PORT), &StreamConfig::default())
+            .await
+            .unwrap();
         connection
             .bind_sasl_kenobi(cred.clone(), target_spn.as_deref())
             .await
@@ -349,7 +378,8 @@ pub mod test {
             &(server, LDAPS_PORT),
             &StreamConfig::NativeTls { connector, domain },
         )
-        .await;
+        .await
+        .unwrap();
         connection
             .bind_sasl_kenobi(cred, target_spn.as_deref())
             .await

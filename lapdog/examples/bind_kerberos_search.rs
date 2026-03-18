@@ -12,7 +12,9 @@ async fn main() {
     let target_spn = std::env::var("LAPDOG_TARGET_SPN").ok();
     let own_spn = std::env::var("LAPDOG_OWN_SPN").ok();
     let cred = Credentials::outbound(own_spn.as_deref(), Mechanism::KerberosV5).unwrap();
-    let mut connection = LdapConnection::new(&(server, LDAP_PORT), &StreamConfig::default()).await;
+    let mut connection = LdapConnection::new(&(server, LDAP_PORT), &StreamConfig::default())
+        .await
+        .unwrap();
     connection
         .bind_sasl_kenobi(cred.clone(), target_spn.as_deref())
         .await
