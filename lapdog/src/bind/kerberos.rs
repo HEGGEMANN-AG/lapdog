@@ -40,7 +40,7 @@ enum InnerContext {
     CanEncrypt(ClientContext<Outbound, Signing, Encryption, MaybeDelegation>),
 }
 impl MaybeEncryptClientContext {
-    pub fn wrap_best(&self, input: &[u8]) -> Box<dyn Deref<Target = [u8]>> {
+    pub fn wrap_best(&self, input: &[u8]) -> Box<dyn Deref<Target = [u8]> + Send> {
         if self.sign_only {
             return Box::new(self.sign(input).unwrap());
         }
