@@ -33,9 +33,7 @@ impl StreamWriteHalf {
             StreamWriteHalf::Kerberos(client_context, write_half) => {
                 let mut write_half = Pin::new(write_half);
                 let encrypt = Pin::new(client_context).wrap_best(m);
-                let mut buf = vec![0; 4 + encrypt.len()];
-                buf[..4].copy_from_slice(&(encrypt.len() as u32).to_be_bytes());
-                buf[4..].copy_from_slice(&encrypt);
+                let buf = [(encrypt.len() as i32).to_be_bytes().as_slice(), &encrypt].concat();
                 write_half.write_all(&buf).await?;
                 write_half.flush().await
             }
