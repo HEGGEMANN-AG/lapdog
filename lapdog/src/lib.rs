@@ -12,9 +12,9 @@ use tokio::sync::{
     oneshot::{Receiver as OReceiver, Sender as OSender},
 };
 
-mod attribute;
+pub mod attribute;
 mod auth;
-mod bind;
+pub mod bind;
 mod compare;
 mod integer;
 mod length;
