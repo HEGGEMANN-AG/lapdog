@@ -12,7 +12,7 @@ keywords = ["ldap", "client", "authentication"]
 categories = ["authentication", "network-programming", "api-bindings"]
 
 [dependencies]
-kenobi = { version = "0.2", optional = true, path = "../../kenobi/crates/kenobi" }
+kenobi = { version = "0.3", optional = true }
 lapdog-derive = { version = "0.2.4", optional = true, path = "../lapdog-derive" }
 native-tls = { version = "0.2.18", optional = true }
 tokio = { version = "1.50.0", features = [

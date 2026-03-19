@@ -231,7 +231,9 @@ checksum = "92ecc6618181def0457392ccd0ee51198e065e016d1d527a7ac1b6dc7c1f09d2"
 
 [[package]]
 name = "kenobi"
-version = "0.2.1"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "999b3437c24e1f093af80c8ce514ed35431e0a2dac2964da1994410ede8b1aaf"
 dependencies = [
  "kenobi-core",
  "kenobi-unix",
@@ -240,14 +242,18 @@ dependencies = [
 
 [[package]]
 name = "kenobi-core"
-version = "0.1.0"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "63c9dbbb9a7450bd18780535ade53183b7c37999843bd6eca9864d8464b27677"
 dependencies = [
  "native-tls",
 ]
 
 [[package]]
 name = "kenobi-unix"
-version = "0.1.1"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bb3d91776f29ee752402942d6a1972e00a5fd03955489d008ed592ecf752566f"
 dependencies = [
  "kenobi-core",
  "libgssapi-sys",
@@ -255,7 +261,9 @@ dependencies = [
 
 [[package]]
 name = "kenobi-windows"
-version = "0.1.1"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3a59f7a5e7d1a22ae7d177d83f69fe86f72fe471013558065d4d50c9f4676499"
 dependencies = [
  "kenobi-core",
  "windows",
