@@ -41,7 +41,8 @@ async fn search_users(ldap: &mut LdapConnection) {
             DerefPolicy::InSearching,
             filter,
         )
-        .await;
+        .await
+        .unwrap();
     let mut count = 0;
     loop {
         use std::time::Duration;

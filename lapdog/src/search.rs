@@ -1,7 +1,13 @@
-use std::{collections::VecDeque, error::Error, fmt::Display, io::Read, marker::PhantomData};
+use std::{
+    collections::VecDeque,
+    error::Error,
+    fmt::Display,
+    io::{ErrorKind, Read},
+    marker::PhantomData,
+};
 
 use crate::{
-    LdapConnection, ReceiveMessageError, WriteExt,
+    LdapConnection, ReceiveMessageError, SendMessageError, WriteExt,
     integer::read_integer_body,
     length::{LengthError, read_length},
     message::RequestProtocolOp,
@@ -28,7 +34,7 @@ impl LdapConnection {
         scope: Scope,
         deref_policy: DerefPolicy,
         filter: Filter<'_>,
-    ) -> SearchResults {
+    ) -> Result<SearchResults, BeginSearchError> {
         self.search_raw(base_object, scope, deref_policy, filter, vec!["*"])
             .await
     }
@@ -39,7 +45,7 @@ impl LdapConnection {
         deref_policy: DerefPolicy,
         filter: Filter<'_>,
         attributes: impl IntoIterator<Item = &'a str>,
-    ) -> SearchResults {
+    ) -> Result<SearchResults, BeginSearchError> {
         self.search_raw(base_object, scope, deref_policy, filter, attributes)
             .await
     }
@@ -49,7 +55,7 @@ impl LdapConnection {
         scope: Scope,
         deref_policy: DerefPolicy,
         filter: Filter<'_>,
-    ) -> SearchResults<Output> {
+    ) -> Result<SearchResults<Output>, BeginSearchError> {
         let attributes = match Output::attributes() {
             None => vec!["*"],
             Some(v) => v.collect(),
@@ -64,7 +70,7 @@ impl LdapConnection {
         deref_policy: DerefPolicy,
         filter: Filter<'_>,
         attributes: impl IntoIterator<Item = &'a str>,
-    ) -> SearchResults<Output> {
+    ) -> Result<SearchResults<Output>, BeginSearchError> {
         let attributes: Vec<&str> = attributes.into_iter().collect();
         let proto = RequestProtocolOp::Search {
             base_object,
@@ -73,13 +79,39 @@ impl LdapConnection {
             filter,
             attributes: &attributes,
         };
-        let (incoming_messages, done) = self.send_message(proto).await.unwrap().into_receiver();
-        SearchResults {
+        let (incoming_messages, done) = self
+            .send_message(proto)
+            .await
+            .map_err(BeginSearchError)?
+            .into_receiver();
+        Ok(SearchResults {
             incoming_messages,
             buffer: Default::default(),
             done: Some(done),
             _e: PhantomData,
+        })
+    }
+}
+
+#[derive(Debug)]
+pub struct BeginSearchError(SendMessageError);
+impl BeginSearchError {
+    pub fn is_disconnect(&self) -> bool {
+        match &self.0 {
+            SendMessageError::Io(error) if error.kind() == ErrorKind::ConnectionReset => true,
+            SendMessageError::ReceiveMessage(ReceiveMessageError::ConnectionClosed) => true,
+            _ => false,
         }
+    }
+}
+impl std::error::Error for BeginSearchError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        Some(&self.0)
+    }
+}
+impl Display for BeginSearchError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Failed to dispatch search request: {:?}", self.0)
     }
 }
 

@@ -297,6 +297,23 @@ enum SendMessageError {
     ChannelClosed,
     ReceiveMessage(ReceiveMessageError),
 }
+impl std::error::Error for SendMessageError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Io(io) => Some(io),
+            _ => None,
+        }
+    }
+}
+impl Display for SendMessageError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ChannelClosed => write!(f, "internal channel closed"),
+            Self::Io(io) => write!(f, "Failed to write to stream: {io}"),
+            Self::ReceiveMessage(rcv) => write!(f, "No message received: {rcv:?}"),
+        }
+    }
+}
 
 #[derive(Debug)]
 enum ReceiveMessageError {
@@ -410,7 +427,8 @@ pub mod test {
                 filter,
                 vec!["userPrincipalName"],
             )
-            .await;
+            .await
+            .unwrap();
         let mut count = 0;
         loop {
             use std::time::Duration;
