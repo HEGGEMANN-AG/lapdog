@@ -11,8 +11,8 @@ use crate::{
     auth::Authentication,
     bind::{self, BindStatus},
     compare::{self, ReadCompareError},
-    integer::read_integer_body,
     length::{LengthError, read_length, write_length},
+    parse::ParseLdap,
     read::ReadExt,
     result::ResultCode,
     search::{self, DerefPolicy, Filter, Scope},
@@ -39,14 +39,11 @@ impl<PO: ProtocolOp> Message<PO> {
         let mut buffer = vec![0; seq_length];
         r.read_exact(&mut buffer).map_err(|_| Error::UnexpectedEOF)?;
         let mut buf_reader = buffer.as_slice();
-        let int_tag = buf_reader.read_single_byte().map_err(|_| Error::UnexpectedEOF)?;
-        if !is_tag_triple(int_tag, TagClass::Universal, PrimOrCons::Primitive, 0x02) {
+        let (int_tag, int) = buf_reader.read_as_tag_integer().unwrap();
+        if int_tag != UNIVERSAL_INTEGER {
             return Err(Error::InvalidMessageStructure);
         }
-        let integer_length = read_length(&mut buf_reader)?;
-        let (int, buf_reader) = buf_reader.split_at(integer_length);
-
-        let message_id = NonZero::new(read_integer_body(int).map_err(|_| Error::InvalidMessageId)?);
+        let message_id = NonZero::new(int);
 
         let protocol_op = PO::read_from(buf_reader).map_err(Error::ReadProtocolOpError)?;
         Ok(Message {
@@ -193,7 +190,7 @@ impl From<LengthError> for ReadProtocolOpError {
     fn from(value: LengthError) -> Self {
         match value {
             LengthError::Io(error) => Self::Io(error),
-            LengthError::Unbounded => Self::InvalidSchema,
+            LengthError::Unbounded | LengthError::OutOfRange => Self::InvalidSchema,
         }
     }
 }
@@ -295,7 +292,7 @@ impl From<LengthError> for Error {
     fn from(value: LengthError) -> Self {
         match value {
             LengthError::Io(_) => Self::UnexpectedEOF,
-            LengthError::Unbounded => Self::InvalidMessageStructure,
+            LengthError::Unbounded | LengthError::OutOfRange => Self::InvalidMessageStructure,
         }
     }
 }

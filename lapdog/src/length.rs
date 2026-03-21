@@ -44,6 +44,7 @@ pub fn write_length<W: Write>(mut w: W, length: usize) -> std::io::Result<usize>
 #[derive(Debug)]
 pub enum LengthError {
     Io(std::io::Error),
+    OutOfRange,
     Unbounded,
 }
 
