@@ -22,7 +22,7 @@ mod message;
 mod parse;
 mod read;
 mod result;
-mod search;
+pub mod search;
 mod stream;
 mod tag;
 
@@ -296,7 +296,7 @@ pub mod test {
 
     use crate::{
         LdapConnection,
-        search::{DerefPolicy, Filter, Scope},
+        search::{DerefPolicy, Filter, Scope, SearchResult},
     };
 
     #[cfg(feature = "kerberos")]
@@ -371,7 +371,6 @@ pub mod test {
 
     async fn test_search(ldap: &mut LdapConnection) {
         let filter = Filter::Present("userPrincipalName");
-        let attributes = ["userPrincipalName"];
         let search_base = std::env::var("LAPDOG_TEST_SEARCH_BASE").unwrap();
         let mut search = ldap
             .search(
@@ -379,7 +378,7 @@ pub mod test {
                 Scope::WholeSubtree,
                 DerefPolicy::InSearching,
                 filter,
-                attributes,
+                vec!["userPrincipalName"],
             )
             .await;
         let mut count = 0;
@@ -387,8 +386,13 @@ pub mod test {
             use std::time::Duration;
 
             match tokio::time::timeout(Duration::from_secs(4), search.next()).await {
-                Ok(Some(_)) => count += 1,
-                Ok(None) | Err(_) => break,
+                Ok(Some(Ok(SearchResult::Entry(raw_entry)))) => {
+                    dbg!(raw_entry);
+                    count += 1
+                }
+                Ok(Some(Err(e))) => println!("Encountered search error: {e:?}"),
+                Ok(Some(Ok(SearchResult::Reference))) => {}
+                Ok(Some(Ok(SearchResult::Done { .. }))) | Ok(None) | Err(_) => break,
             };
         }
         println!("Server sent {count} entries")

@@ -13,6 +13,7 @@ categories = ["authentication", "network-programming", "api-bindings"]
 
 [dependencies]
 kenobi = { version = "0.2", optional = true, path = "../../kenobi/crates/kenobi" }
+lapdog-derive = { version = "0.2.4", optional = true, path = "../lapdog-derive" }
 native-tls = { version = "0.2.18", optional = true }
 tokio = { version = "1.50.0", features = [
     "io-util",
@@ -26,6 +27,12 @@ tokio-native-tls = { version = "0.3.1", optional = true }
 [features]
 native-tls = ["dep:native-tls", "dep:tokio-native-tls", "kenobi?/native-tls"]
 kerberos = ["dep:kenobi"]
+derive = []
+from_octets = []
+
+[[example]]
+name = "bind_kerberos_search"
+features = ["derive", "kerberos"]
 
 [dev-dependencies]
 tokio = { version = "1.50.0", features = ["rt-multi-thread", "time"] }

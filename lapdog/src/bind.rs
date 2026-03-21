@@ -157,6 +157,8 @@ pub enum BindStatus {
 pub struct BindResponse {
     pub bind_status: BindStatus,
     pub sasl_creds: Option<Vec<u8>>,
+    #[expect(dead_code)]
     pub diagnostics_message: String,
+    #[expect(dead_code)]
     pub matched_dn: String,
 }
