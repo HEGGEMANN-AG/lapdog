@@ -185,7 +185,7 @@ impl LdapConnection {
                     kind,
                     sign_only: false,
                 };
-                encrypt_stream(&mut self.yoink_read_half, &self.tcp, Arc::new(ctx)).await;
+                encrypt_stream(&mut self.yoink_read_half, &self.tcp, Arc::new(Mutex::new(ctx))).await;
                 Ok(())
             }
             (SaslMechanism::GSSAPI, BindStatus::Pending) => {
@@ -193,7 +193,12 @@ impl LdapConnection {
                     return Err(BindError::Insecure);
                 };
                 let enc_layer = self.do_kerberos_negotiation_exchange(signing).await?;
-                encrypt_stream(&mut self.yoink_read_half, &self.tcp, Arc::new(enc_layer)).await;
+                encrypt_stream(
+                    &mut self.yoink_read_half,
+                    &self.tcp,
+                    Arc::new(Mutex::new(enc_layer)),
+                )
+                .await;
                 Ok(())
             }
             (_, _) => todo!(),
@@ -330,7 +335,7 @@ impl LdapConnection {
 async fn encrypt_stream(
     yoink_read_half: &mut mpsc::Sender<(oneshot::Sender<StreamReadHalf>, oneshot::Receiver<StreamReadHalf>)>,
     own_stream: &Mutex<Option<StreamWriteHalf>>,
-    client_ctx: Arc<MaybeEncryptClientContext>,
+    client_ctx: Arc<Mutex<MaybeEncryptClientContext>>,
 ) {
     // take both streams, join them for the channel binding, give them back
     let (return_envelope, rec_stream_half) = tokio::sync::oneshot::channel();

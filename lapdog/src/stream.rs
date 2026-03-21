@@ -4,6 +4,8 @@ use std::{io::Read, pin::Pin, sync::Arc};
 
 #[cfg(feature = "native-tls")]
 use tokio::io::{ReadHalf, WriteHalf};
+#[cfg(feature = "kerberos")]
+use tokio::sync::Mutex;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{
@@ -25,7 +27,7 @@ pub enum StreamWriteHalf {
     #[cfg(feature = "native-tls")]
     NativeTls(WriteHalf<tokio_native_tls::TlsStream<TcpStream>>),
     #[cfg(feature = "kerberos")]
-    Kerberos(Arc<MaybeEncryptClientContext>, OwnedWriteHalf),
+    Kerberos(Arc<Mutex<MaybeEncryptClientContext>>, OwnedWriteHalf),
 }
 impl StreamWriteHalf {
     pub async fn write_message(&mut self, m: &[u8]) -> Result<(), std::io::Error> {
@@ -36,7 +38,7 @@ impl StreamWriteHalf {
             #[cfg(feature = "kerberos")]
             StreamWriteHalf::Kerberos(client_context, write_half) => {
                 let mut write_half = Pin::new(write_half);
-                let encrypt = Pin::new(client_context).wrap_best(m);
+                let encrypt = Pin::new(client_context.lock().await).wrap_best(m);
                 let mut buf = vec![0; 4 + encrypt.len()];
                 buf[..4].copy_from_slice(&(encrypt.len() as u32).to_be_bytes());
                 buf[4..].copy_from_slice(&encrypt);
@@ -51,7 +53,7 @@ pub enum StreamReadHalf {
     #[cfg(feature = "native-tls")]
     NativeTls(ReadHalf<tokio_native_tls::TlsStream<TcpStream>>),
     #[cfg(feature = "kerberos")]
-    Kerberos(Arc<MaybeEncryptClientContext>, VecDeque<u8>, OwnedReadHalf),
+    Kerberos(Arc<Mutex<MaybeEncryptClientContext>>, VecDeque<u8>, OwnedReadHalf),
 }
 impl StreamReadHalf {
     pub async fn get_next_message(&mut self) -> Result<(i32, Vec<u8>), std::io::Error> {
@@ -67,7 +69,7 @@ impl StreamReadHalf {
                     let size = owned_read_half.read_u32().await?;
                     let mut buf = vec![0u8; size as usize];
                     owned_read_half.read_exact(&mut buf).await?;
-                    let c = ctx.unwrap(&buf).unwrap().to_vec();
+                    let c = ctx.lock().await.unwrap(&buf).unwrap().to_vec();
                     buffer.write_all(&c).unwrap();
                 }
                 Ok(read_message_head_sync(buffer))
@@ -118,7 +120,7 @@ pub enum Stream {
     #[cfg(feature = "native-tls")]
     NativeTls(tokio_native_tls::TlsStream<TcpStream>),
     #[cfg(feature = "kerberos")]
-    Kerberos(Arc<MaybeEncryptClientContext>, VecDeque<u8>, TcpStream),
+    Kerberos(Arc<Mutex<MaybeEncryptClientContext>>, VecDeque<u8>, TcpStream),
 }
 impl Stream {
     pub fn split(self) -> (StreamReadHalf, StreamWriteHalf) {
