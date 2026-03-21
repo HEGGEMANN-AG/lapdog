@@ -6,7 +6,7 @@ use crate::{
     LDAP_VERSION, WriteExt,
     auth::{Authentication, SaslMechanism},
     length::{LengthError, read_length},
-    parse::ParseLdap,
+    parse::{ParseLdap, ReadIntegerError},
     read::ReadExt,
     result::ResultCode,
     tag::{
@@ -55,7 +55,7 @@ pub fn write_bind(auth: &Authentication) -> Vec<u8> {
 }
 
 pub fn read_response<R: Read>(mut r: R) -> Result<BindResponse, ReadBindError> {
-    let (tag, i) = r.read_as_tag_integer().unwrap();
+    let (tag, i) = r.read_as_tag_integer()?;
     if tag != UNIVERSAL_ENUMERATED {
         return Err(ReadBindError::InvalidSchema);
     }
@@ -135,6 +135,14 @@ impl From<LengthError> for ReadBindError {
         match value {
             LengthError::Io(error) => Self::Io(error),
             LengthError::Unbounded | LengthError::OutOfRange => Self::InvalidSchema,
+        }
+    }
+}
+impl From<ReadIntegerError> for ReadBindError {
+    fn from(value: ReadIntegerError) -> Self {
+        match value {
+            ReadIntegerError::Io(io) => ReadBindError::Io(io),
+            ReadIntegerError::Length(_) | ReadIntegerError::OutOfRange => Self::InvalidSchema,
         }
     }
 }

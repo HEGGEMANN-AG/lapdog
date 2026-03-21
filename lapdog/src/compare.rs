@@ -5,7 +5,7 @@ use crate::{
     attribute::AttributeValueAssertion,
     length::{LengthError, read_length},
     message::{ProtocolOp, ReadProtocolOpError, RequestProtocolOp},
-    parse::ParseLdap,
+    parse::{ParseLdap, ReadIntegerError},
     read::ReadExt,
     result::ResultCode,
     tag::{OCTET_STRING, UNIVERSAL_ENUMERATED},
@@ -129,6 +129,14 @@ impl From<LengthError> for ReadCompareError {
         match value {
             LengthError::Io(error) => Self::Io(error),
             LengthError::Unbounded | LengthError::OutOfRange => Self::InvalidSchema,
+        }
+    }
+}
+impl From<ReadIntegerError> for ReadCompareError {
+    fn from(value: ReadIntegerError) -> Self {
+        match value {
+            ReadIntegerError::Io(error) => Self::Io(error),
+            ReadIntegerError::Length(_) | ReadIntegerError::OutOfRange => Self::InvalidSchema,
         }
     }
 }
