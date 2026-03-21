@@ -3,9 +3,9 @@ use std::io::Read;
 use crate::{
     LdapConnection, ResponseProtocolOp, SendMessageError, WriteExt,
     attribute::AttributeValueAssertion,
-    integer::read_integer_body,
     length::{LengthError, read_length},
     message::{ProtocolOp, ReadProtocolOpError, RequestProtocolOp},
+    parse::{ParseLdap, ReadIntegerError},
     read::ReadExt,
     result::ResultCode,
     tag::{OCTET_STRING, UNIVERSAL_ENUMERATED},
@@ -73,22 +73,17 @@ pub(crate) fn write_compare(entry: &str, value_assertion: &AttributeValueAsserti
 }
 
 pub(crate) fn read_response<R: Read>(mut r: R) -> Result<bool, ReadCompareError> {
-    let tag = r.read_single_byte()?;
+    let (tag, code) = r.read_as_tag_integer().unwrap();
     if tag != UNIVERSAL_ENUMERATED {
         return Err(ReadCompareError::InvalidSchema);
     }
+
     // LdapResult code
-    let code = {
-        let enum_len = read_length(&mut r)?;
-        let mut enum_i = vec![0; enum_len];
-        r.read_exact(&mut enum_i)?;
-        read_integer_body(&enum_i)
-            .map_err(|_| ReadCompareError::InvalidSchema)?
-            .try_into()
-            .ok()
-            .and_then(ResultCode::from_code)
-            .ok_or(ReadCompareError::InvalidSchema)?
-    };
+    let code = code
+        .try_into()
+        .ok()
+        .and_then(ResultCode::from_code)
+        .ok_or(ReadCompareError::InvalidSchema)?;
     match code {
         ResultCode::CompareTrue => return Ok(true),
         ResultCode::CompareFalse => return Ok(false),
@@ -133,7 +128,15 @@ impl From<LengthError> for ReadCompareError {
     fn from(value: LengthError) -> Self {
         match value {
             LengthError::Io(error) => Self::Io(error),
-            LengthError::Unbounded => Self::InvalidSchema,
+            LengthError::Unbounded | LengthError::OutOfRange => Self::InvalidSchema,
+        }
+    }
+}
+impl From<ReadIntegerError> for ReadCompareError {
+    fn from(value: ReadIntegerError) -> Self {
+        match value {
+            ReadIntegerError::Io(error) => Self::Io(error),
+            ReadIntegerError::Length(_) | ReadIntegerError::OutOfRange => Self::InvalidSchema,
         }
     }
 }

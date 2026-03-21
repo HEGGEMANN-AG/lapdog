@@ -41,7 +41,6 @@ use tokio::{
 
 use crate::{
     message::RequestProtocolOp,
-    read::ReadLdapError,
     stream::{Stream, StreamReadHalf, StreamWriteHalf},
 };
 
@@ -183,7 +182,7 @@ impl LdapConnection {
                 b = stream_opt.as_mut().unwrap().get_next_message() => {
                     match b {
                         Ok(values) => values,
-                        Err(ReadLdapError::Io(e)) if e.kind() == ErrorKind::ConnectionReset =>  {
+                        Err(e) if e.kind() == ErrorKind::ConnectionReset =>  {
                             break;
                         },
                         e => panic!("error checking message: {e:?}")

@@ -151,7 +151,7 @@ impl From<LengthError> for ReadProtocolOpError {
     fn from(value: LengthError) -> Self {
         match value {
             LengthError::Io(error) => Self::Io(error),
-            LengthError::Unbounded => Self::InvalidSchema,
+            LengthError::Unbounded | LengthError::OutOfRange => Self::InvalidSchema,
         }
     }
 }

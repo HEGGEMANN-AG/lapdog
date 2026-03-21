@@ -8,10 +8,10 @@ use std::{
 
 use crate::{
     LdapConnection, ReceiveMessageError, SendMessageError, WriteExt,
-    integer::read_integer_body,
     length::{LengthError, read_length},
     message::RequestProtocolOp,
-    read::{ReadExt, ReadLdap},
+    parse::ParseLdap,
+    read::ReadExt,
     result::ResultCode,
     tag::{
         self, OCTET_STRING, UNIVERSAL_BOOLEAN, UNIVERSAL_ENUMERATED, UNIVERSAL_INTEGER, UNIVERSAL_SEQUENCE,
@@ -183,18 +183,18 @@ pub(crate) fn read_search_as<E: FromEntry, R: Read>(
             let Ok(UNIVERSAL_SEQUENCE) = bytes.read_single_byte() else {
                 return Err(SearchResultError::InvalidSchema);
             };
-            let (Some(attr_list_len), _) = bytes.read_length().map_err(SearchResultError::Io)? else {
-                return Err(SearchResultError::InvalidSchema);
-            };
+            let attr_list_len = bytes
+                .read_ber_length()
+                .map_err(|_| SearchResultError::InvalidSchema)?;
             assert_eq!(bytes.len(), attr_list_len);
             let mut attributes = Vec::<Attribute>::new();
             while !bytes.is_empty() {
                 let Ok(UNIVERSAL_SEQUENCE) = bytes.read_single_byte() else {
                     return Err(SearchResultError::InvalidSchema);
                 };
-                let (Some(attr_seq_len), _) = bytes.read_length().map_err(SearchResultError::Io)? else {
-                    return Err(SearchResultError::InvalidSchema);
-                };
+                let attr_seq_len = bytes
+                    .read_ber_length()
+                    .map_err(|_| SearchResultError::InvalidSchema)?;
                 let Some((mut attr_reader, rest)) = bytes.split_at_checked(attr_seq_len) else {
                     return Err(SearchResultError::InvalidSchema);
                 };
@@ -203,9 +203,9 @@ pub(crate) fn read_search_as<E: FromEntry, R: Read>(
                 let Ok(OCTET_STRING) = attr_reader.read_single_byte() else {
                     return Err(SearchResultError::InvalidSchema);
                 };
-                let (Some(strlen), _) = attr_reader.read_length().map_err(SearchResultError::Io)? else {
-                    return Err(SearchResultError::InvalidSchema);
-                };
+                let strlen = attr_reader
+                    .read_ber_length()
+                    .map_err(|_| SearchResultError::InvalidSchema)?;
                 let mut attr_type = String::new();
                 attr_reader
                     .by_ref()
@@ -217,18 +217,16 @@ pub(crate) fn read_search_as<E: FromEntry, R: Read>(
                 let Ok(UNIVERSAL_SET) = attr_reader.read_single_byte() else {
                     return Err(SearchResultError::InvalidSchema);
                 };
-                let (Some(_setlen), _) = attr_reader.read_length().map_err(SearchResultError::Io)? else {
-                    return Err(SearchResultError::InvalidSchema);
-                };
+                let _setlen = attr_reader
+                    .read_ber_length()
+                    .map_err(|_| SearchResultError::InvalidSchema)?;
                 while !attr_reader.is_empty() {
                     let Ok(OCTET_STRING) = attr_reader.read_single_byte() else {
                         return Err(SearchResultError::InvalidSchema);
                     };
-                    let (Some(attr_value_len), _) =
-                        attr_reader.read_length().map_err(SearchResultError::Io)?
-                    else {
-                        return Err(SearchResultError::InvalidSchema);
-                    };
+                    let attr_value_len = attr_reader
+                        .read_ber_length()
+                        .map_err(|_| SearchResultError::InvalidSchema)?;
                     let mut buf = vec![0; attr_value_len];
                     attr_reader.read_exact(&mut buf).map_err(SearchResultError::Io)?;
                     attr_values.push(buf);
@@ -247,21 +245,13 @@ pub(crate) fn read_search_as<E: FromEntry, R: Read>(
                 .map(SearchResult::Entry)
         }
         5 => {
-            if bytes
-                .read_single_byte()
-                .map_err(|_| SearchResultError::InvalidSchema)?
-                != UNIVERSAL_ENUMERATED
-            {
+            let (tag, int) = bytes.read_as_tag_integer().unwrap();
+            if tag != UNIVERSAL_ENUMERATED {
                 return Err(SearchResultError::InvalidSchema);
             }
-            let int_len = read_length(&mut bytes)?;
-            let mut int = vec![0; int_len];
-            bytes
-                .read_exact(&mut int)
-                .map_err(|_| SearchResultError::InvalidSchema)?;
-            let code = read_integer_body(&int)
+            let code = int
+                .try_into()
                 .ok()
-                .and_then(|i| i.try_into().ok())
                 .and_then(ResultCode::from_code)
                 .ok_or(SearchResultError::InvalidSchema)?;
             // matched dn
@@ -318,7 +308,7 @@ impl From<LengthError> for SearchResultError {
     fn from(value: LengthError) -> Self {
         match value {
             LengthError::Io(error) => Self::Io(error),
-            LengthError::Unbounded => Self::InvalidSchema,
+            LengthError::Unbounded | LengthError::OutOfRange => Self::InvalidSchema,
         }
     }
 }
