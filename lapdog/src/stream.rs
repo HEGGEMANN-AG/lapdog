@@ -57,9 +57,9 @@ pub enum StreamReadHalf {
 impl StreamReadHalf {
     pub async fn get_next_message(&mut self) -> Result<(i32, Vec<u8>), std::io::Error> {
         match self {
-            StreamReadHalf::Plain(owned_read_half) => Ok(read_message_head_async(owned_read_half).await),
+            StreamReadHalf::Plain(owned_read_half) => Ok(read_message_head_async(owned_read_half).await?),
             #[cfg(feature = "native-tls")]
-            StreamReadHalf::NativeTls(read_half) => Ok(read_message_head_async(read_half).await),
+            StreamReadHalf::NativeTls(read_half) => Ok(read_message_head_async(read_half).await?),
             #[cfg(feature = "kerberos")]
             StreamReadHalf::Kerberos(ctx, buffer, owned_read_half) => {
                 if buffer.is_empty() {
@@ -77,22 +77,24 @@ impl StreamReadHalf {
     }
 }
 
-async fn read_message_head_async<R: AsyncReadExt + Unpin>(r: &mut R) -> (i32, Vec<u8>) {
-    let seq_tag = r.read_u8().await.unwrap();
+async fn read_message_head_async<R: AsyncReadExt + Unpin>(
+    r: &mut R,
+) -> Result<(i32, Vec<u8>), std::io::Error> {
+    let seq_tag = r.read_u8().await?;
     if seq_tag != UNIVERSAL_SEQUENCE {
         panic!("Not a sequence");
     }
-    let (Some(len), _) = r.read_length().await.unwrap() else {
+    let (Some(len), _) = r.read_length().await? else {
         panic!()
     };
     let mut buffer = vec![0; len];
-    r.read_exact(&mut buffer).await.unwrap();
+    r.read_exact(&mut buffer).await?;
     let mut buf_read = buffer.as_slice();
     let (tag, message_id) = buf_read.read_as_tag_integer().unwrap();
     if tag != UNIVERSAL_INTEGER {
         panic!("message id is not an int");
     }
-    (message_id, buf_read.to_vec())
+    Ok((message_id, buf_read.to_vec()))
 }
 
 fn read_message_head_sync<R: Read>(r: &mut R) -> (i32, Vec<u8>) {
