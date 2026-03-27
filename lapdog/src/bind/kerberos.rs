@@ -1,7 +1,7 @@
 use std::{ops::Deref, sync::Arc};
 
 use kenobi::{
-    client::{ClientBuilder, ClientContext, StepOut},
+    client::{ClientBuilder, ClientContext, InitializeError, StepOut},
     cred::{Credentials, Outbound},
     sign_encrypt::{Signature, UnwrapError, WrapError},
     typestate::{Encryption, MaybeDelegation, MaybeEncryption, MaybeSigning, NoEncryption, Signing},
@@ -213,7 +213,7 @@ impl LdapConnection {
         client_builder: ClientBuilder<Outbound>,
         mechanism: SaslMechanism,
     ) -> Result<(Option<FinishedClientContext>, BindStatus), BindError> {
-        match client_builder.initialize() {
+        match client_builder.initialize()? {
             StepOut::Finished(f) => {
                 let Some(token) = f.last_token() else {
                     panic!("Kerberos mechanism didn't return a token on the first step, but it should have")
@@ -255,7 +255,7 @@ impl LdapConnection {
                 let Some(return_token) = server_sasl_creds else {
                     return Ok((None, status));
                 };
-                ctx = match ctx.step(&return_token) {
+                ctx = match ctx.step(&return_token)? {
                     StepOut::Pending(pending_client_context) => pending_client_context,
                     StepOut::Finished(f) => return Ok((Some(f), status)),
                 }
@@ -280,7 +280,9 @@ impl LdapConnection {
         else {
             return Err(BindError::InvalidSchema);
         };
-        let token_cleartext = ctx.unwrap(&server_sasl_creds).map_err(|_| BindError::GssAPI)?;
+        let token_cleartext = ctx
+            .unwrap(&server_sasl_creds)
+            .map_err(|_| BindError::GssAPIWrap)?;
         let Some(token_cleartext): Option<[u8; 4]> = token_cleartext.as_array().copied() else {
             return Err(BindError::InvalidServerToken);
         };
@@ -386,7 +388,8 @@ pub enum BindError {
     ServerError { code: ResultCode, message: String },
     ChannelBind,
     SendOrReceive,
-    GssAPI,
+    GssAPIInit(InitializeError),
+    GssAPIWrap,
     Insecure,
     InvalidSchema,
     InvalidSecurityContext,
@@ -394,7 +397,12 @@ pub enum BindError {
 }
 impl From<WrapError> for BindError {
     fn from(_: WrapError) -> Self {
-        Self::GssAPI
+        Self::GssAPIWrap
+    }
+}
+impl From<InitializeError> for BindError {
+    fn from(value: InitializeError) -> Self {
+        Self::GssAPIInit(value)
     }
 }
 impl From<SendMessageError> for BindError {
