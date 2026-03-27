@@ -12,9 +12,12 @@ keywords = ["ldap", "client", "authentication"]
 categories = ["authentication", "network-programming", "api-bindings"]
 
 [dependencies]
-kenobi = { version = "0.3", optional = true }
+kenobi = { version = "0.3", path = "../../kenobi/crates/kenobi", optional = true }
 lapdog-derive = { version = "0.2.4", optional = true, path = "../lapdog-derive" }
 native-tls = { version = "0.2.18", optional = true }
+rustls = { version = "0.23.37", default-features = false, features = [
+    "std",
+], optional = true }
 tokio = { version = "1.50.0", features = [
     "io-util",
     "macros",
@@ -23,12 +26,14 @@ tokio = { version = "1.50.0", features = [
     "sync",
 ] }
 tokio-native-tls = { version = "0.3.1", optional = true }
+tokio-rustls = { version = "0.26.4", optional = true }
 
 [features]
 native-tls = ["dep:native-tls", "dep:tokio-native-tls", "kenobi?/native-tls"]
 kerberos = ["dep:kenobi"]
 derive = ["dep:lapdog-derive", "from_octets"]
 from_octets = []
+rustls = ["dep:rustls", "dep:tokio-rustls", "kenobi?/rustls"]
 
 [[example]]
 name = "bind_kerberos_search"

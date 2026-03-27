@@ -41,23 +41,23 @@ enum InnerContext {
     CanEncrypt(ClientContext<Outbound, Signing, Encryption, MaybeDelegation>),
 }
 impl MaybeEncryptClientContext {
-    pub fn wrap_best(&self, input: &[u8]) -> Box<dyn Deref<Target = [u8]> + Send> {
+    pub fn wrap_best(&mut self, input: &[u8]) -> Box<dyn Deref<Target = [u8]> + Send> {
         if self.sign_only {
             return Box::new(self.sign(input).unwrap());
         }
-        match &self.kind {
+        match &mut self.kind {
             InnerContext::SignOnly(ctx) => Box::new(ctx.sign(input).unwrap()),
             InnerContext::CanEncrypt(ctx) => Box::new(ctx.encrypt(input).unwrap()),
         }
     }
-    fn sign(&self, input: &[u8]) -> Result<Signature, WrapError> {
-        match &self.kind {
+    fn sign(&mut self, input: &[u8]) -> Result<Signature, WrapError> {
+        match &mut self.kind {
             InnerContext::SignOnly(ctx) => ctx.sign(input),
             InnerContext::CanEncrypt(ctx) => ctx.sign(input),
         }
     }
-    pub fn unwrap(&self, input: &[u8]) -> Result<Box<dyn Deref<Target = [u8]>>, UnwrapError> {
-        match &self.kind {
+    pub fn unwrap(&mut self, input: &[u8]) -> Result<Box<dyn Deref<Target = [u8]>>, UnwrapError> {
+        match &mut self.kind {
             InnerContext::SignOnly(ctx) => ctx
                 .unwrap(input)
                 .map(|v| Box::new(v) as Box<dyn Deref<Target = [u8]>>),
@@ -89,19 +89,21 @@ impl LdapConnection {
             StreamWriteHalf::Plain(_) => false,
             #[cfg(feature = "native-tls")]
             StreamWriteHalf::NativeTls(_) => true,
+            #[cfg(feature = "rustls")]
+            StreamWriteHalf::Rustls(_) => true,
             StreamWriteHalf::Kerberos(_, _) => panic!("Already bound with Kerberos, cannot bind again"),
         };
         if is_tls {
-            #[cfg(feature = "native-tls")]
+            #[cfg(any(feature = "native-tls", feature = "rustls"))]
             return self.bind_gss_tls(cred, mech, spn).await;
-            #[cfg(not(feature = "native-tls"))]
+            #[cfg(not(any(feature = "native-tls", feature = "rustls")))]
             unreachable!()
         } else {
             self.bind_gss(cred, mech, spn).await
         }
     }
 
-    #[cfg(feature = "native-tls")]
+    #[cfg(any(feature = "native-tls", feature = "rustls"))]
     async fn bind_gss_tls(
         &mut self,
         cred: Credentials<Outbound>,
@@ -133,9 +135,7 @@ impl LdapConnection {
             };
             client_builder
         };
-        let Ok(client_builder) = client_builder else {
-            return Err(BindError::ChannelBind);
-        };
+        let client_builder = client_builder.map_err(|_| BindError::ChannelBind)?;
         let (Some(ctx), status) = self.exchange_gss_tokens(client_builder, mechanism).await? else {
             println!("context not ready after exchange");
             return Err(BindError::InvalidSecurityContext);
@@ -265,7 +265,7 @@ impl LdapConnection {
 
     async fn do_kerberos_negotiation_exchange(
         &self,
-        ctx: ClientContext<Outbound, Signing, MaybeEncryption, MaybeDelegation>,
+        mut ctx: ClientContext<Outbound, Signing, MaybeEncryption, MaybeDelegation>,
     ) -> Result<MaybeEncryptClientContext, BindError> {
         // Send empty token to prompt security layer negotiation
         let authentication = Authentication::sasl_kerberos(None);
@@ -291,7 +291,7 @@ impl LdapConnection {
         let mut buffer = [0; 4];
         buffer[1..].copy_from_slice(&token_cleartext[1..4]);
         let _buffer_length = u32::from_be_bytes(buffer);
-        let maybe_encrypt = ctx.check_encryption();
+        let mut maybe_encrypt = ctx.check_encryption();
         let sign_only = match (bind_offer, &maybe_encrypt) {
             (BindSecurityOffer::None, _) => return Err(BindError::Insecure),
             (BindSecurityOffer::Signing, _) | (BindSecurityOffer::Encryption, Err(_)) => true,
@@ -300,7 +300,7 @@ impl LdapConnection {
         buffer[0] = if sign_only { 0x2 } else { 0x4 };
 
         // Wrap the last token and send it
-        let wrapped = match &maybe_encrypt {
+        let wrapped = match &mut maybe_encrypt {
             Ok(s) => s.sign(&buffer)?,
             Err(e) => e.sign(&buffer)?,
         };

@@ -55,6 +55,11 @@ pub enum StreamConfig {
         connector: native_tls::TlsConnector,
         domain: String,
     },
+    #[cfg(feature = "rustls")]
+    Rustls {
+        config: Arc<rustls::ClientConfig>,
+        domain: String,
+    },
 }
 impl StreamConfig {
     pub fn is_tls(&self) -> bool {
@@ -62,6 +67,8 @@ impl StreamConfig {
             Self::Plain => false,
             #[cfg(feature = "native-tls")]
             Self::NativeTls { .. } => true,
+            #[cfg(feature = "rustls")]
+            Self::Rustls { .. } => true,
         }
     }
 }
@@ -107,6 +114,18 @@ impl LdapConnection {
                     .await
                     .map_err(ConnectError::Tls)?;
                 Stream::NativeTls(s)
+            }
+            #[cfg(feature = "rustls")]
+            StreamConfig::Rustls { config, domain } => {
+                use rustls::pki_types::{DnsName, ServerName};
+
+                let connector: tokio_rustls::client::TlsConnector = config.clone().into();
+                let sname = match DnsName::try_from_str(domain) {
+                    Ok(name) => ServerName::DnsName(name).to_owned(),
+                    Err(_) => return Err(ConnectError::InvalidRustlsDomainName),
+                };
+                let stream = connector.connect(sname, stream).await.map_err(ConnectError::Io)?;
+                Stream::Rustls(tokio_rustls::TlsStream::Client(stream))
             }
         }
         .split();
@@ -251,6 +270,8 @@ impl Drop for LdapConnection {
 #[derive(Debug)]
 pub enum ConnectError {
     Io(std::io::Error),
+    #[cfg(feature = "rustls")]
+    InvalidRustlsDomainName,
     #[cfg(feature = "native-tls")]
     Tls(native_tls::Error),
 }
@@ -258,6 +279,8 @@ impl std::error::Error for ConnectError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Io(io) => Some(io),
+            #[cfg(feature = "rustls")]
+            Self::InvalidRustlsDomainName => None,
             #[cfg(feature = "native-tls")]
             Self::Tls(tls) => Some(tls),
         }
@@ -267,6 +290,8 @@ impl Display for ConnectError {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Io(io) => write!(f, "Failed to connect: {io}"),
+            #[cfg(feature = "rustls")]
+            Self::InvalidRustlsDomainName => write!(f, "Invalid domain name"),
             #[cfg(feature = "native-tls")]
             Self::Tls(tls) => write!(f, "Failed to setup secure channel: {tls}"),
         }

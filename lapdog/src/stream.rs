@@ -2,7 +2,7 @@
 use std::collections::VecDeque;
 use std::{io::Read, pin::Pin, sync::Arc};
 
-#[cfg(feature = "native-tls")]
+#[cfg(any(feature = "native-tls", feature = "rustls"))]
 use tokio::io::{ReadHalf, WriteHalf};
 #[cfg(feature = "kerberos")]
 use tokio::sync::Mutex;
@@ -28,6 +28,8 @@ pub enum StreamWriteHalf {
     NativeTls(WriteHalf<tokio_native_tls::TlsStream<TcpStream>>),
     #[cfg(feature = "kerberos")]
     Kerberos(Arc<Mutex<MaybeEncryptClientContext>>, OwnedWriteHalf),
+    #[cfg(feature = "rustls")]
+    Rustls(WriteHalf<tokio_rustls::TlsStream<TcpStream>>),
 }
 impl StreamWriteHalf {
     pub async fn write_message(&mut self, m: &[u8]) -> Result<(), std::io::Error> {
@@ -35,6 +37,8 @@ impl StreamWriteHalf {
             StreamWriteHalf::Plain(owned_write_half) => owned_write_half.write_all(m).await,
             #[cfg(feature = "native-tls")]
             StreamWriteHalf::NativeTls(write_half) => write_half.write_all(m).await,
+            #[cfg(feature = "rustls")]
+            StreamWriteHalf::Rustls(write_half) => write_half.write_all(m).await,
             #[cfg(feature = "kerberos")]
             StreamWriteHalf::Kerberos(client_context, write_half) => {
                 let mut write_half = Pin::new(write_half);
@@ -53,6 +57,8 @@ pub enum StreamReadHalf {
     NativeTls(ReadHalf<tokio_native_tls::TlsStream<TcpStream>>),
     #[cfg(feature = "kerberos")]
     Kerberos(Arc<Mutex<MaybeEncryptClientContext>>, VecDeque<u8>, OwnedReadHalf),
+    #[cfg(feature = "rustls")]
+    Rustls(ReadHalf<tokio_rustls::TlsStream<TcpStream>>),
 }
 impl StreamReadHalf {
     pub async fn get_next_message(&mut self) -> Result<(i32, Vec<u8>), std::io::Error> {
@@ -60,6 +66,8 @@ impl StreamReadHalf {
             StreamReadHalf::Plain(owned_read_half) => Ok(read_message_head_async(owned_read_half).await?),
             #[cfg(feature = "native-tls")]
             StreamReadHalf::NativeTls(read_half) => Ok(read_message_head_async(read_half).await?),
+            #[cfg(feature = "rustls")]
+            StreamReadHalf::Rustls(read_half) => Ok(read_message_head_async(read_half).await?),
             #[cfg(feature = "kerberos")]
             StreamReadHalf::Kerberos(ctx, buffer, owned_read_half) => {
                 if buffer.is_empty() {
@@ -122,6 +130,8 @@ pub enum Stream {
     NativeTls(tokio_native_tls::TlsStream<TcpStream>),
     #[cfg(feature = "kerberos")]
     Kerberos(Arc<Mutex<MaybeEncryptClientContext>>, VecDeque<u8>, TcpStream),
+    #[cfg(feature = "rustls")]
+    Rustls(tokio_rustls::TlsStream<TcpStream>),
 }
 impl Stream {
     pub fn split(self) -> (StreamReadHalf, StreamWriteHalf) {
@@ -143,6 +153,11 @@ impl Stream {
                     StreamWriteHalf::Kerberos(client, w),
                 )
             }
+            #[cfg(feature = "rustls")]
+            Self::Rustls(rustls) => {
+                let (r, w) = tokio::io::split(rustls);
+                (StreamReadHalf::Rustls(r), StreamWriteHalf::Rustls(w))
+            }
         }
     }
     #[cfg(feature = "kerberos")]
@@ -154,6 +169,10 @@ impl Stream {
             #[cfg(feature = "native-tls")]
             (StreamReadHalf::NativeTls(read_half), StreamWriteHalf::NativeTls(write_half)) => {
                 Stream::NativeTls(read_half.unsplit(write_half))
+            }
+            #[cfg(feature = "rustls")]
+            (StreamReadHalf::Rustls(read_half), StreamWriteHalf::Rustls(write_half)) => {
+                Stream::Rustls(read_half.unsplit(write_half))
             }
             #[cfg(feature = "kerberos")]
             (
@@ -184,6 +203,14 @@ pub mod channel_bindings {
                     .get_ref()
                     .channel_bindings()
                     .map_err(ChannelBindingError::Native),
+                #[cfg(feature = "rustls")]
+                Stream::Rustls(rustls) => {
+                    let cert = rustls.get_ref().1.peer_certificates().and_then(|c| c.first());
+                    match cert {
+                        Some(c) => Ok(c.channel_bindings().unwrap()),
+                        None => Ok(None),
+                    }
+                }
                 #[cfg(feature = "kerberos")]
                 Stream::Kerberos(_, _, _) => Ok(None),
             }
