@@ -372,6 +372,7 @@ impl<W: Write> WriteExt for W {}
 
 #[cfg(test)]
 pub mod test {
+    #[cfg(feature = "kerberos")]
     use kenobi::mech::Mechanism;
 
     use crate::{
