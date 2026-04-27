@@ -9,6 +9,7 @@ use crate::{
     bind::{self, BindStatus},
     compare::{self, ReadCompareError},
     length::{LengthError, read_length},
+    modify::{self, Change, ReadModifyError},
     read::ReadExt,
     result::ResultCode,
     search::{self, DerefPolicy, Filter, Scope},
@@ -113,6 +114,10 @@ impl ProtocolOp for ResponseProtocolOp {
                     status,
                 })
             }
+            7 => {
+                modify::read_response(message_body_reader)?;
+                Ok(Self::Modify)
+            }
             15 => {
                 let compare = compare::read_response(message_body_reader)?;
                 Ok(Self::Compare { compare })
@@ -180,7 +185,10 @@ pub enum RequestProtocolOp<'a> {
         filter: Filter<'a>,
         attributes: &'a [&'a str],
     },
-    Modify,
+    Modify {
+        object: &'a str,
+        changes: &'a [Change<'a>],
+    },
     Add,
     Delete,
     ModifyDN,
@@ -197,7 +205,7 @@ impl ProtocolOp for RequestProtocolOp<'_> {
             Self::Bind { .. } => 0,
             Self::Unbind => 2,
             Self::Search { .. } => 3,
-            Self::Modify => 6,
+            Self::Modify { .. } => 6,
             Self::Add => 8,
             Self::Delete => 10,
             Self::ModifyDN => 12,
@@ -234,6 +242,7 @@ impl RequestProtocolOp<'_> {
                 filter,
                 attributes.iter().copied(),
             ),
+            Self::Modify { object, changes } => modify::write_modify(object, changes),
             _ => todo!(),
         };
         w.write_ber_length(proto_op_inner.len())?;

@@ -20,6 +20,7 @@ mod compare;
 mod integer;
 mod length;
 mod message;
+pub mod modify;
 mod parse;
 mod read;
 mod result;
