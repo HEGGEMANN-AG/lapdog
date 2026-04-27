@@ -1,4 +1,7 @@
-use std::io::Read;
+use std::{
+    fmt::{Display, Formatter, Result as FmtResult},
+    io::Read,
+};
 
 use crate::{
     LdapConnection, ResponseProtocolOp, SendMessageError, WriteExt,
@@ -52,7 +55,7 @@ impl From<ReadProtocolOpError> for CompareError {
     fn from(value: ReadProtocolOpError) -> Self {
         match value {
             ReadProtocolOpError::Io(error) => Self::Io(error),
-            ReadProtocolOpError::ProtocolError { code, message } => Self::ServerError { code, message },
+            ReadProtocolOpError::ServerError { code, message } => Self::ServerError { code, message },
             ReadProtocolOpError::InvalidSchema => Self::InvalidSchema,
         }
     }
@@ -60,6 +63,23 @@ impl From<ReadProtocolOpError> for CompareError {
 impl From<std::io::Error> for CompareError {
     fn from(value: std::io::Error) -> Self {
         Self::Io(value)
+    }
+}
+impl std::error::Error for CompareError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        if let Self::Io(io) = self { Some(io) } else { None }
+    }
+}
+impl Display for CompareError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
+        match self {
+            Self::Io(error) => write!(f, "An IO error occured: {error}"),
+            Self::InvalidSchema => write!(f, "Server returned an invalid message"),
+            Self::Disconnected => write!(f, "Connection disconnected"),
+            Self::ServerError { code, message } => {
+                write!(f, "Server returned an error. Code: {code:?} (\"{message}\")",)
+            }
+        }
     }
 }
 
@@ -73,7 +93,7 @@ pub(crate) fn write_compare(entry: &str, value_assertion: &AttributeValueAsserti
 }
 
 pub(crate) fn read_response<R: Read>(mut r: R) -> Result<bool, ReadCompareError> {
-    let (tag, code) = r.read_as_tag_integer().unwrap();
+    let (tag, code) = r.read_as_tag_integer()?;
     if tag != UNIVERSAL_ENUMERATED {
         return Err(ReadCompareError::InvalidSchema);
     }

@@ -417,7 +417,7 @@ impl From<ReadProtocolOpError> for BindError {
     fn from(value: ReadProtocolOpError) -> Self {
         match value {
             ReadProtocolOpError::Io(io_err) => BindError::Io(io_err),
-            ReadProtocolOpError::ProtocolError { code, message } => BindError::ServerError { code, message },
+            ReadProtocolOpError::ServerError { code, message } => BindError::ServerError { code, message },
             ReadProtocolOpError::InvalidSchema => BindError::InvalidSchema,
         }
     }

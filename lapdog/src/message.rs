@@ -124,7 +124,7 @@ impl ProtocolOp for ResponseProtocolOp {
 #[derive(Debug)]
 pub enum ReadProtocolOpError {
     Io(std::io::Error),
-    ProtocolError { code: ResultCode, message: String },
+    ServerError { code: ResultCode, message: String },
     InvalidSchema,
 }
 impl From<bind::ReadBindError> for ReadProtocolOpError {
@@ -134,7 +134,7 @@ impl From<bind::ReadBindError> for ReadProtocolOpError {
             bind::ReadBindError::InvalidResultCode | bind::ReadBindError::InvalidSchema => {
                 Self::InvalidSchema
             }
-            bind::ReadBindError::BindError { code, message } => Self::ProtocolError { code, message },
+            bind::ReadBindError::BindError { code, message } => Self::ServerError { code, message },
         }
     }
 }
@@ -143,7 +143,16 @@ impl From<ReadCompareError> for ReadProtocolOpError {
         match value {
             ReadCompareError::Io(error) => Self::Io(error),
             ReadCompareError::InvalidSchema => Self::InvalidSchema,
-            ReadCompareError::ServerError { code, message } => Self::ProtocolError { code, message },
+            ReadCompareError::ServerError { code, message } => Self::ServerError { code, message },
+        }
+    }
+}
+impl From<ReadModifyError> for ReadProtocolOpError {
+    fn from(value: ReadModifyError) -> Self {
+        match value {
+            ReadModifyError::InvalidSchema => Self::InvalidSchema,
+            ReadModifyError::Io(error) => Self::Io(error),
+            ReadModifyError::ServerError { code, message } => Self::ServerError { code, message },
         }
     }
 }
@@ -165,7 +174,7 @@ pub enum RequestProtocolOp<'a> {
     },
     Unbind,
     Search {
-        base_object: &'a str,
+        entry: &'a str,
         scope: Scope,
         deref_policy: DerefPolicy,
         filter: Filter<'a>,
@@ -213,7 +222,7 @@ impl RequestProtocolOp<'_> {
                 value_assertion,
             } => compare::write_compare(entry, value_assertion),
             Self::Search {
-                base_object,
+                entry: base_object,
                 scope,
                 deref_policy,
                 filter,
