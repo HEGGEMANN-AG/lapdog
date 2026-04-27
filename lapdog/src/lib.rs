@@ -355,6 +355,18 @@ trait WriteExt: Write {
     fn write_ber_integer_body(&mut self, i: i32) -> std::io::Result<usize> {
         crate::integer::write_integer_body(i, self)
     }
+    fn write_sequence(
+        &mut self,
+        tag: u8,
+        f: impl FnOnce(&mut Vec<u8>) -> Result<(), std::io::Error>,
+    ) -> Result<(), std::io::Error> {
+        self.write_single_byte(tag)?;
+        let mut sequence = Vec::new();
+        f(&mut sequence)?;
+        self.write_ber_length(sequence.len())?;
+        self.write_all(&sequence)?;
+        Ok(())
+    }
 }
 impl<W: Write> WriteExt for W {}
 

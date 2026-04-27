@@ -12,12 +12,7 @@ pub struct AttributeValueAssertion<'d> {
 }
 impl AttributeValueAssertion<'_> {
     pub(crate) fn write_into<W: Write>(&self, w: &mut W) -> std::io::Result<()> {
-        let mut seq_inner = Vec::new();
-        self.write_body_into(&mut seq_inner)?;
-
-        w.write_single_byte(UNIVERSAL_SEQUENCE)?;
-        w.write_ber_length(seq_inner.len())?;
-        w.write_all(&seq_inner)?;
+        w.write_sequence(UNIVERSAL_SEQUENCE, |seq_inner| self.write_body_into(seq_inner))?;
         Ok(())
     }
     pub(crate) fn write_body_into<W: Write>(&self, w: &mut W) -> std::io::Result<()> {

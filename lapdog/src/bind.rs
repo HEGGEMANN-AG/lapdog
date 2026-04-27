@@ -34,23 +34,26 @@ pub(crate) fn write_bind(auth: &Authentication) -> Vec<u8> {
         mechanism,
         credentials,
     } = auth;
-    bind_msg.push(TagClass::ContextSpecific.into_bits() | PrimOrCons::Constructed.into_bit() | 0x3);
-    let mut sasl = Vec::new();
-    sasl.push(OCTET_STRING);
-    let mech = match mechanism {
-        SaslMechanism::GSSAPI => "GSSAPI",
-        SaslMechanism::GSSSPNEGO => "GSS-SPNEGO",
-    };
-    sasl.write_ber_length(mech.len()).expect("infallible");
-    sasl.extend(mech.as_bytes());
-    if let Some(cred) = credentials {
-        sasl.push(TagClass::Universal.into_bits() | PrimOrCons::Primitive.into_bit() | 0x04);
-        sasl.write_ber_length(cred.len()).expect("infallible");
-        sasl.extend_from_slice(cred);
-    }
-
-    bind_msg.write_ber_length(sasl.len()).expect("infallible");
-    bind_msg.extend_from_slice(&sasl);
+    bind_msg
+        .write_sequence(
+            TagClass::ContextSpecific.into_bits() | PrimOrCons::Constructed.into_bit() | 0x3,
+            |sasl| {
+                sasl.push(OCTET_STRING);
+                let mech = match mechanism {
+                    SaslMechanism::GSSAPI => "GSSAPI",
+                    SaslMechanism::GSSSPNEGO => "GSS-SPNEGO",
+                };
+                sasl.write_ber_length(mech.len()).expect("infallible");
+                sasl.extend(mech.as_bytes());
+                if let Some(cred) = credentials {
+                    sasl.push(TagClass::Universal.into_bits() | PrimOrCons::Primitive.into_bit() | 0x04);
+                    sasl.write_ber_length(cred.len()).expect("infallible");
+                    sasl.extend_from_slice(cred);
+                }
+                Ok(())
+            },
+        )
+        .expect("infallible");
     bind_msg
 }
 

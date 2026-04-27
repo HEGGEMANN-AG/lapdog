@@ -65,7 +65,7 @@ impl LdapConnection {
     }
     async fn search_raw<'a, Output: FromEntry>(
         &self,
-        base_object: &str,
+        entry: &str,
         scope: Scope,
         deref_policy: DerefPolicy,
         filter: Filter<'_>,
@@ -73,7 +73,7 @@ impl LdapConnection {
     ) -> Result<SearchResults<Output>, BeginSearchError> {
         let attributes: Vec<&str> = attributes.into_iter().collect();
         let proto = RequestProtocolOp::Search {
-            base_object,
+            entry,
             scope,
             deref_policy,
             filter,
@@ -374,15 +374,15 @@ pub(crate) fn write_search<'a>(
 
     filter.write_into(&mut out).unwrap();
 
-    out.push(UNIVERSAL_SEQUENCE);
-    let mut attr_sequence = Vec::new();
-    for attr in attributes {
-        attr_sequence.push(OCTET_STRING);
-        attr_sequence.write_ber_length(attr.len()).unwrap();
-        attr_sequence.extend_from_slice(attr.as_bytes());
-    }
-    out.write_ber_length(attr_sequence.len()).unwrap();
-    out.extend_from_slice(&attr_sequence);
+    out.write_sequence(UNIVERSAL_SEQUENCE, move |attr_sequence| {
+        for attr in attributes {
+            attr_sequence.push(OCTET_STRING);
+            attr_sequence.write_ber_length(attr.len()).unwrap();
+            attr_sequence.extend_from_slice(attr.as_bytes());
+        }
+        Ok(())
+    })
+    .expect("infallible");
 
     out
 }

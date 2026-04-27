@@ -90,29 +90,27 @@ impl Filter<'_> {
     pub(super) fn write_into<W: Write>(&self, mut wout: W) -> Result<(), std::io::Error> {
         let tag = self.tag();
 
-        let mut v = Vec::new();
-        match self {
-            Self::And(f) | Self::Or(f) => {
-                for subfilter in f {
-                    subfilter.write_into(&mut v)?;
+        wout.write_sequence(tag, |mut v| {
+            match self {
+                Self::And(f) | Self::Or(f) => {
+                    for subfilter in f {
+                        subfilter.write_into(&mut v)?;
+                    }
                 }
-            }
-            Self::Not(f) => {
-                f.write_into(&mut v)?;
-            }
-            Self::Present(attr) => {
-                v.extend_from_slice(attr.as_bytes());
-            }
-            Filter::Equal(ava)
-            | Filter::GreaterOrEqual(ava)
-            | Filter::LessOrEqual(ava)
-            | Filter::ApproxMatch(ava) => ava.write_body_into(&mut v)?,
-            Filter::ExtensibleMatch(em) => em.write_body_into(&mut v),
-        };
-
-        wout.write_single_byte(tag)?;
-        wout.write_ber_length(v.len())?;
-        wout.write_all(&v)?;
+                Self::Not(f) => {
+                    f.write_into(v)?;
+                }
+                Self::Present(attr) => {
+                    v.extend_from_slice(attr.as_bytes());
+                }
+                Filter::Equal(ava)
+                | Filter::GreaterOrEqual(ava)
+                | Filter::LessOrEqual(ava)
+                | Filter::ApproxMatch(ava) => ava.write_body_into(v)?,
+                Filter::ExtensibleMatch(em) => em.write_body_into(v),
+            };
+            Ok(())
+        })?;
 
         Ok(())
     }
