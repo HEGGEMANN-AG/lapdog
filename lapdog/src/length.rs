@@ -1,4 +1,8 @@
-use std::io::{Read, Write};
+use std::{
+    error::Error,
+    fmt::{Display, Formatter, Result as FmtResult},
+    io::{Read, Write},
+};
 
 use crate::{WriteExt, read::ReadExt};
 
@@ -49,6 +53,23 @@ pub enum LengthError {
     Io(std::io::Error),
     OutOfRange,
     Unbounded,
+}
+impl Error for LengthError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Io(io) => Some(io),
+            Self::OutOfRange | Self::Unbounded => None,
+        }
+    }
+}
+impl Display for LengthError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
+        match self {
+            Self::Io(io) => write!(f, "Io error: {io}"),
+            Self::OutOfRange => write!(f, "Length out of range"),
+            Self::Unbounded => write!(f, "Unbounded ranges are not supported in LDAP"),
+        }
+    }
 }
 
 #[cfg(test)]

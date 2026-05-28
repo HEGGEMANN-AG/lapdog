@@ -1,4 +1,8 @@
-use std::io::Read;
+use std::{
+    error::Error,
+    fmt::{Display, Formatter, Result as FmtResult},
+    io::Read,
+};
 
 use crate::{length::LengthError, read::ReadExt};
 
@@ -43,4 +47,22 @@ pub enum ReadIntegerError {
     Io(std::io::Error),
     Length(LengthError),
     OutOfRange,
+}
+impl Error for ReadIntegerError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Io(io) => Some(io),
+            Self::Length(l) => Some(l),
+            Self::OutOfRange => None,
+        }
+    }
+}
+impl Display for ReadIntegerError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
+        match self {
+            Self::Io(io) => write!(f, "Io Error: {io}"),
+            Self::Length(l) => write!(f, "Invalid length: {l}"),
+            Self::OutOfRange => write!(f, "integer out of range"),
+        }
+    }
 }
