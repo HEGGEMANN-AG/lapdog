@@ -21,10 +21,13 @@ impl LdapConnection {
         value_assertion: AttributeValueAssertion<'_>,
     ) -> Result<bool, CompareError> {
         let response = self
-            .send_message(RequestProtocolOp::Compare {
-                entry,
-                value_assertion,
-            })
+            .send_message(
+                RequestProtocolOp::Compare {
+                    entry,
+                    value_assertion,
+                },
+                None,
+            )
             .await?
             .into_message();
         let ResponseProtocolOp::Compare { compare } =

@@ -16,7 +16,7 @@ use crate::{
 impl LdapConnection {
     pub async fn modify(&mut self, object: &str, changes: &[Change<'_>]) -> Result<(), ModifyError> {
         let response = self
-            .send_message(RequestProtocolOp::Modify { object, changes })
+            .send_message(RequestProtocolOp::Modify { object, changes }, None)
             .await
             .unwrap()
             .into_message();

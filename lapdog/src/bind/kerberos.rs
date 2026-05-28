@@ -219,12 +219,15 @@ impl LdapConnection {
                     panic!("Kerberos mechanism didn't return a token on the first step, but it should have")
                 };
                 let body = self
-                    .send_message(RequestProtocolOp::Bind {
-                        authentication: Authentication::Sasl {
-                            mechanism,
-                            credentials: Some(token.into()),
+                    .send_message(
+                        RequestProtocolOp::Bind {
+                            authentication: Authentication::Sasl {
+                                mechanism,
+                                credentials: Some(token.into()),
+                            },
                         },
-                    })
+                        None,
+                    )
                     .await?
                     .into_message();
                 let ResponseProtocolOp::Bind { status, .. } =
@@ -237,12 +240,15 @@ impl LdapConnection {
             StepOut::Pending(mut ctx) => loop {
                 use std::borrow::Cow;
                 let body = self
-                    .send_message(RequestProtocolOp::Bind {
-                        authentication: Authentication::Sasl {
-                            mechanism,
-                            credentials: Some(Cow::Borrowed(ctx.next_token())),
+                    .send_message(
+                        RequestProtocolOp::Bind {
+                            authentication: Authentication::Sasl {
+                                mechanism,
+                                credentials: Some(Cow::Borrowed(ctx.next_token())),
+                            },
                         },
-                    })
+                        None,
+                    )
                     .await?
                     .into_message();
                 let ResponseProtocolOp::Bind {
@@ -270,7 +276,7 @@ impl LdapConnection {
         // Send empty token to prompt security layer negotiation
         let authentication = Authentication::sasl_kerberos(None);
         let body = self
-            .send_message(RequestProtocolOp::Bind { authentication })
+            .send_message(RequestProtocolOp::Bind { authentication }, None)
             .await?
             .into_message();
         let ResponseProtocolOp::Bind {
@@ -313,7 +319,7 @@ impl LdapConnection {
         let encryption_layer = MaybeEncryptClientContext { kind, sign_only };
         let authentication = Authentication::sasl_kerberos(Some(&wrapped));
         let last_body = self
-            .send_message(RequestProtocolOp::Bind { authentication })
+            .send_message(RequestProtocolOp::Bind { authentication }, None)
             .await?
             .into_message();
         let ResponseProtocolOp::Bind {

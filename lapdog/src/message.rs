@@ -8,6 +8,7 @@ use crate::{
     auth::Authentication,
     bind::{self, BindStatus},
     compare::{self, ReadCompareError},
+    controls::Control,
     length::{LengthError, read_length},
     modify::{self, Change, ReadModifyError},
     read::ReadExt,
@@ -18,37 +19,52 @@ use crate::{
     },
 };
 
-pub type RequestMessage<'a> = Message<RequestProtocolOp<'a>>;
+pub type RequestMessage<'a> = Message<'a, RequestProtocolOp<'a>>;
 
 #[derive(Debug)]
-pub struct Message<ProtocolOp> {
+pub struct Message<'a, ProtocolOp> {
     pub(crate) message_id: Option<NonZero<i32>>,
     pub(crate) protocol_op: ProtocolOp,
+    pub(crate) controls: Option<&'a [Control<'a>]>,
 }
 impl RequestMessage<'_> {
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut buffer = Vec::new();
-        buffer.push(UNIVERSAL_SEQUENCE);
+        buffer
+            .write_sequence(UNIVERSAL_SEQUENCE, |ldap_message| {
+                // Message ID
+                ldap_message.push(UNIVERSAL_INTEGER);
 
-        let mut ldap_message = Vec::new();
+                let id = self.message_id.map(Into::into).unwrap_or_default();
+                let mut int_b = Vec::new();
+                int_b.write_ber_integer_body(id).expect("infallible");
 
-        // Message ID
-        ldap_message.push(UNIVERSAL_INTEGER);
+                ldap_message.write_ber_length(int_b.len()).expect("infallible");
+                ldap_message.extend_from_slice(&int_b);
 
-        let id = self.message_id.map(Into::into).unwrap_or_default();
-        let mut int_b = Vec::new();
-        int_b.write_ber_integer_body(id).expect("infallible");
+                // Protocol Op
+                self.protocol_op
+                    .write_into(&mut *ldap_message)
+                    .expect("infallible");
 
-        ldap_message.write_ber_length(int_b.len()).expect("infallible");
-        ldap_message.extend_from_slice(&int_b);
-
-        // Protocol Op
-        self.protocol_op
-            .write_into(&mut ldap_message)
+                if let Some(controls) = &self.controls
+                    && !controls.is_empty()
+                {
+                    ldap_message
+                        .write_sequence(
+                            TagClass::ContextSpecific.into_bits() | PrimOrCons::Constructed.into_bit(),
+                            |buf| {
+                                for control in controls.iter() {
+                                    control.write_into(buf);
+                                }
+                                Ok(())
+                            },
+                        )
+                        .expect("infallible to write to vec");
+                };
+                Ok(())
+            })
             .expect("infallible");
-
-        buffer.write_ber_length(ldap_message.len()).expect("infallible");
-        buffer.extend(&ldap_message);
         buffer
     }
 }

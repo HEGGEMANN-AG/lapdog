@@ -21,6 +21,7 @@ pub fn read_length<R: Read>(mut r: R) -> Result<usize, LengthError> {
     }
 }
 
+/// Can only fail if the underlying Write call fails
 pub fn write_length<W: Write>(mut w: W, length: usize) -> std::io::Result<usize> {
     if length < 128 {
         w.write_single_byte(length as u8)?;

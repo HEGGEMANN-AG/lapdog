@@ -8,6 +8,7 @@ use std::{
 
 use crate::{
     LdapConnection, ReceiveMessageError, SendMessageError, WriteExt,
+    controls::Control,
     length::{LengthError, read_length},
     message::RequestProtocolOp,
     parse::ParseLdap,
@@ -35,7 +36,7 @@ impl LdapConnection {
         deref_policy: DerefPolicy,
         filter: Filter<'_>,
     ) -> Result<SearchResults, BeginSearchError> {
-        self.search_raw(base_object, scope, deref_policy, filter, vec!["*"])
+        self.search_raw(base_object, scope, deref_policy, filter, vec!["*"], None)
             .await
     }
     pub async fn search<'a>(
@@ -46,7 +47,7 @@ impl LdapConnection {
         filter: Filter<'_>,
         attributes: impl IntoIterator<Item = &'a str>,
     ) -> Result<SearchResults, BeginSearchError> {
-        self.search_raw(base_object, scope, deref_policy, filter, attributes)
+        self.search_raw(base_object, scope, deref_policy, filter, attributes, None)
             .await
     }
     pub async fn search_as<Output: FromEntry>(
@@ -60,8 +61,67 @@ impl LdapConnection {
             None => vec!["*"],
             Some(v) => v.collect(),
         };
-        self.search_raw(base_object, scope, deref_policy, filter, attributes)
+        self.search_raw(base_object, scope, deref_policy, filter, attributes, None)
             .await
+    }
+    pub async fn search_all_with_controls(
+        &self,
+        base_object: &str,
+        scope: Scope,
+        deref_policy: DerefPolicy,
+        filter: Filter<'_>,
+        controls: &[Control<'_>],
+    ) -> Result<SearchResults, BeginSearchError> {
+        self.search_raw(
+            base_object,
+            scope,
+            deref_policy,
+            filter,
+            vec!["*"],
+            Some(controls),
+        )
+        .await
+    }
+    pub async fn search_with_controls<'a>(
+        &self,
+        base_object: &str,
+        scope: Scope,
+        deref_policy: DerefPolicy,
+        filter: Filter<'_>,
+        attributes: impl IntoIterator<Item = &'a str>,
+        controls: &[Control<'_>],
+    ) -> Result<SearchResults, BeginSearchError> {
+        self.search_raw(
+            base_object,
+            scope,
+            deref_policy,
+            filter,
+            attributes,
+            Some(controls),
+        )
+        .await
+    }
+    pub async fn search_with_controls_as<Output: FromEntry>(
+        &self,
+        base_object: &str,
+        scope: Scope,
+        deref_policy: DerefPolicy,
+        filter: Filter<'_>,
+        controls: &[Control<'_>],
+    ) -> Result<SearchResults<Output>, BeginSearchError> {
+        let attributes = match Output::attributes() {
+            None => vec!["*"],
+            Some(v) => v.collect(),
+        };
+        self.search_raw(
+            base_object,
+            scope,
+            deref_policy,
+            filter,
+            attributes,
+            Some(controls),
+        )
+        .await
     }
     async fn search_raw<'a, Output: FromEntry>(
         &self,
@@ -70,6 +130,7 @@ impl LdapConnection {
         deref_policy: DerefPolicy,
         filter: Filter<'_>,
         attributes: impl IntoIterator<Item = &'a str>,
+        controls: Option<&[Control<'_>]>,
     ) -> Result<SearchResults<Output>, BeginSearchError> {
         let attributes: Vec<&str> = attributes.into_iter().collect();
         let proto = RequestProtocolOp::Search {
@@ -80,7 +141,7 @@ impl LdapConnection {
             attributes: &attributes,
         };
         let (incoming_messages, done) = self
-            .send_message(proto)
+            .send_message(proto, controls)
             .await
             .map_err(BeginSearchError)?
             .into_receiver();

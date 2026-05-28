@@ -17,10 +17,12 @@ pub mod attribute;
 mod auth;
 pub mod bind;
 mod compare;
+pub mod controls;
 mod integer;
 mod length;
 mod message;
 pub mod modify;
+pub mod oid;
 mod parse;
 mod read;
 mod result;
@@ -41,6 +43,7 @@ use tokio::{
 };
 
 use crate::{
+    controls::Control,
     message::RequestProtocolOp,
     stream::{Stream, StreamReadHalf, StreamWriteHalf},
 };
@@ -149,6 +152,7 @@ impl LdapConnection {
     async fn send_message(
         &self,
         protocol_op: RequestProtocolOp<'_>,
+        controls: Option<&[Control<'_>]>,
     ) -> Result<IncomingMessage, SendMessageError> {
         let message_id = self.message_id.fetch_add(1, Ordering::Relaxed);
         let id = NonZero::new(message_id).unwrap();
@@ -156,6 +160,7 @@ impl LdapConnection {
         let bytes = RequestMessage {
             message_id: Some(id),
             protocol_op,
+            controls,
         }
         .to_bytes();
         if is_search {
