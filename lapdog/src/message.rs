@@ -8,7 +8,7 @@ use crate::{
     auth::Authentication,
     bind::{self, BindStatus},
     compare::{self, ReadCompareError},
-    controls::Control,
+    controls::ControlRef,
     length::{LengthError, read_length},
     modify::{self, Change, ReadModifyError},
     read::ReadExt,
@@ -25,7 +25,7 @@ pub type RequestMessage<'a> = Message<'a, RequestProtocolOp<'a>>;
 pub struct Message<'a, ProtocolOp> {
     pub(crate) message_id: Option<NonZero<i32>>,
     pub(crate) protocol_op: ProtocolOp,
-    pub(crate) controls: Option<&'a [Control<'a>]>,
+    pub(crate) controls: Option<&'a [ControlRef<'a>]>,
 }
 impl RequestMessage<'_> {
     pub fn to_bytes(&self) -> Vec<u8> {

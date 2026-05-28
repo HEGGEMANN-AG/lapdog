@@ -2,11 +2,11 @@ pub mod controls {
     use crate::{
         WriteExt,
         active_directory::oids::LDAP_PAGED_RESULT_OID_STRING,
-        controls::Control,
+        controls::ControlRef,
         tag::{OCTET_STRING, UNIVERSAL_INTEGER, UNIVERSAL_SEQUENCE},
     };
 
-    pub fn paged_result_oid_string(criticality: bool, size: i32) -> Control<'static> {
+    pub fn paged_result_oid_string(criticality: bool, size: i32) -> ControlRef<'static> {
         let mut control_value = Vec::new();
         control_value
             .write_sequence(UNIVERSAL_SEQUENCE, |b| {
@@ -21,7 +21,7 @@ pub mod controls {
             })
             .unwrap();
         let control_value = Some(control_value);
-        Control {
+        ControlRef {
             oid: LDAP_PAGED_RESULT_OID_STRING,
             criticality,
             control_value,

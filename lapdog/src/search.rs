@@ -8,7 +8,7 @@ use std::{
 
 use crate::{
     LdapConnection, ReceiveMessageError, SendMessageError, WriteExt,
-    controls::Control,
+    controls::ControlRef,
     length::{LengthError, read_length},
     message::RequestProtocolOp,
     parse::ParseLdap,
@@ -70,7 +70,7 @@ impl LdapConnection {
         scope: Scope,
         deref_policy: DerefPolicy,
         filter: Filter<'_>,
-        controls: &[Control<'_>],
+        controls: &[ControlRef<'_>],
     ) -> Result<SearchResults, BeginSearchError> {
         self.search_raw(
             base_object,
@@ -89,7 +89,7 @@ impl LdapConnection {
         deref_policy: DerefPolicy,
         filter: Filter<'_>,
         attributes: impl IntoIterator<Item = &'a str>,
-        controls: &[Control<'_>],
+        controls: &[ControlRef<'_>],
     ) -> Result<SearchResults, BeginSearchError> {
         self.search_raw(
             base_object,
@@ -107,7 +107,7 @@ impl LdapConnection {
         scope: Scope,
         deref_policy: DerefPolicy,
         filter: Filter<'_>,
-        controls: &[Control<'_>],
+        controls: &[ControlRef<'_>],
     ) -> Result<SearchResults<Output>, BeginSearchError> {
         let attributes = match Output::attributes() {
             None => vec!["*"],
@@ -130,7 +130,7 @@ impl LdapConnection {
         deref_policy: DerefPolicy,
         filter: Filter<'_>,
         attributes: impl IntoIterator<Item = &'a str>,
-        controls: Option<&[Control<'_>]>,
+        controls: Option<&[ControlRef<'_>]>,
     ) -> Result<SearchResults<Output>, BeginSearchError> {
         let attributes: Vec<&str> = attributes.into_iter().collect();
         let proto = RequestProtocolOp::Search {

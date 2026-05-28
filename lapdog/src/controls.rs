@@ -5,12 +5,12 @@ use crate::{
 };
 
 #[derive(Clone, Debug)]
-pub struct Control<'r> {
+pub struct ControlRef<'r> {
     pub oid: OidRef<'r>,
     pub criticality: bool,
     pub control_value: Option<Vec<u8>>,
 }
-impl<'r> Control<'r> {
+impl<'r> ControlRef<'r> {
     pub fn write_into(&self, v: &mut Vec<u8>) {
         v.write_sequence(UNIVERSAL_SEQUENCE, |buf| {
             buf.push(OCTET_STRING);

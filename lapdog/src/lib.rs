@@ -45,7 +45,7 @@ use tokio::{
 };
 
 use crate::{
-    controls::Control,
+    controls::ControlRef,
     message::RequestProtocolOp,
     stream::{Stream, StreamReadHalf, StreamWriteHalf},
 };
@@ -154,7 +154,7 @@ impl LdapConnection {
     async fn send_message(
         &self,
         protocol_op: RequestProtocolOp<'_>,
-        controls: Option<&[Control<'_>]>,
+        controls: Option<&[ControlRef<'_>]>,
     ) -> Result<IncomingMessage, SendMessageError> {
         let message_id = self.message_id.fetch_add(1, Ordering::Relaxed);
         let id = NonZero::new(message_id).unwrap();
