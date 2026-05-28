@@ -13,6 +13,8 @@ use tokio::sync::{
     oneshot::{Receiver as OReceiver, Sender as OSender},
 };
 
+#[cfg(feature = "active_directory")]
+pub mod active_directory;
 pub mod attribute;
 mod auth;
 pub mod bind;
