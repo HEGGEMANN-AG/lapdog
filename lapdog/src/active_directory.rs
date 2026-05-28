@@ -1,7 +1,6 @@
 pub mod controls {
     use crate::{
         WriteExt,
-        active_directory::oids::LDAP_PAGED_RESULT_OID_STRING,
         controls::ControlRef,
         tag::{OCTET_STRING, UNIVERSAL_INTEGER, UNIVERSAL_SEQUENCE},
     };
@@ -22,9 +21,17 @@ pub mod controls {
             .unwrap();
         let control_value = Some(control_value);
         ControlRef {
-            oid: LDAP_PAGED_RESULT_OID_STRING,
+            oid: super::oids::LDAP_PAGED_RESULT_OID_STRING,
             criticality,
             control_value,
+        }
+    }
+    /// Remember to user Present("objectClass") as filter.
+    pub fn server_notification(criticality: bool) -> ControlRef<'static> {
+        ControlRef {
+            oid: super::oids::LDAP_SERVER_NOTIFICATION,
+            criticality,
+            control_value: None,
         }
     }
 }
@@ -32,6 +39,12 @@ pub mod controls {
 pub mod oids {
     use crate::oid::OidRef;
 
-    pub const LDAP_PAGED_RESULT_OID_STRING: OidRef =
-        OidRef::new(&[1, 2, 840, 113556, 1, 4, 319]).expect("not empty");
+    macro_rules! with_microsoft_prefix {
+        ($e:expr) => {
+            OidRef::new(&[1, 2, 840, 113556, 1, 4, $e]).expect("not empty")
+        };
+    }
+
+    pub const LDAP_PAGED_RESULT_OID_STRING: OidRef = with_microsoft_prefix!(319);
+    pub const LDAP_SERVER_NOTIFICATION: OidRef = with_microsoft_prefix!(528);
 }

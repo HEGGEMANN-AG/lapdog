@@ -35,7 +35,7 @@ async fn main() {
         .bind_sasl_kenobi(cred.clone(), target_spn.as_deref())
         .await
         .unwrap();
-    search_users(&mut connection).await
+    search_users(&connection).await
 }
 
 #[derive(Debug, Entry)]
@@ -47,33 +47,36 @@ struct User {
     member_of: Vec<String>,
 }
 
-async fn search_users(ldap: &mut LdapConnection) {
-    let filter = Filter::Present("userPrincipalName");
+async fn search_users(ldap: &LdapConnection) {
     let search_base = std::env::var("LAPDOG_TEST_SEARCH_BASE").unwrap();
-    let control = lapdog::active_directory::controls::paged_result_oid_string(true, 3);
+    let control = lapdog::active_directory::controls::server_notification(true);
     let mut search = ldap
         .search_with_controls_as::<User>(
             &search_base,
             Scope::WholeSubtree,
-            DerefPolicy::InSearching,
-            filter,
+            DerefPolicy::Never,
+            Filter::Present("objectclass"),
             &[control],
         )
         .await
         .unwrap();
     let mut count = 0;
-    loop {
+    let result = loop {
         use std::time::Duration;
 
-        match tokio::time::timeout(Duration::from_secs(4), search.next()).await {
+        match tokio::time::timeout(Duration::from_mins(4), search.next()).await {
             Ok(Some(Ok(SearchResult::Entry(User { upn, .. })))) => {
-                println!("Found user {upn}");
+                println!("Changed user {upn}");
                 count += 1
             }
             Ok(Some(Err(e))) => println!("Encountered search error: {e:?}"),
             Ok(Some(Ok(SearchResult::Reference))) => {}
-            Ok(Some(Ok(SearchResult::Done { .. }))) | Ok(None) | Err(_) => break,
+            Ok(Some(Ok(SearchResult::Done { code, .. }))) => break Some(code),
+            Ok(None) | Err(_) => break None,
         };
+    };
+    println!("Server sent {count} entries");
+    if let Some(code) = result {
+        println!("Server finished search with code {code:?}");
     }
-    println!("Server sent {count} entries")
 }
