@@ -18,7 +18,7 @@ pub mod controls {
                 b.write_ber_length(0).expect("infallible");
                 Ok(())
             })
-            .unwrap();
+            .expect("write to Vec is infallible");
         let control_value = Some(control_value);
         ControlRef {
             oid: super::oids::LDAP_PAGED_RESULT_OID_STRING,
