@@ -20,13 +20,15 @@ use crate::{
     },
 };
 
+mod filter;
 #[cfg(feature = "from_octets")]
 mod impl_traits;
 mod types;
+pub use filter::{Filter, MatchingRuleAssertion};
 #[cfg(feature = "derive")]
 pub use lapdog_derive::Entry;
 use tokio::sync::{mpsc::UnboundedReceiver, oneshot::Sender};
-pub use types::{DerefPolicy, Filter, MatchingRuleAssertion, Scope};
+pub use types::{DerefPolicy, Scope};
 
 impl LdapConnection {
     pub async fn search_all(
