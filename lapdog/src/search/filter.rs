@@ -97,14 +97,46 @@ impl BitAnd for Filter<'_> {
     type Output = Self;
 
     fn bitand(self, rhs: Self) -> Self::Output {
-        Self::And(vec![self, rhs])
+        match (self, rhs) {
+            (Filter::And(mut filters), Filter::And(more_filters)) => {
+                filters.extend(more_filters);
+                Self::And(filters)
+            }
+            (Filter::And(mut filters), other) => {
+                filters.push(other);
+                Self::And(filters)
+            }
+            (not_and, Filter::And(others)) => {
+                let mut filters = Vec::with_capacity(others.len().saturating_add(1));
+                filters.push(not_and);
+                filters.extend_from_slice(&others);
+                Self::And(filters)
+            }
+            (not_and, rhs) => Self::And(vec![not_and, rhs]),
+        }
     }
 }
 impl BitOr for Filter<'_> {
     type Output = Self;
 
     fn bitor(self, rhs: Self) -> Self::Output {
-        Self::Or(vec![self, rhs])
+        match (self, rhs) {
+            (Filter::Or(mut filters), Filter::Or(more_filters)) => {
+                filters.extend(more_filters);
+                Self::Or(filters)
+            }
+            (Filter::Or(mut filters), other) => {
+                filters.push(other);
+                Self::Or(filters)
+            }
+            (not_and, Filter::Or(others)) => {
+                let mut filters = Vec::with_capacity(others.len().saturating_add(1));
+                filters.push(not_and);
+                filters.extend_from_slice(&others);
+                Self::Or(filters)
+            }
+            (not_and, rhs) => Self::Or(vec![not_and, rhs]),
+        }
     }
 }
 impl Not for Filter<'_> {
