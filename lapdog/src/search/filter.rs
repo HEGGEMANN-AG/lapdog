@@ -1,4 +1,7 @@
-use std::{io::Write, ops::Not};
+use std::{
+    io::Write,
+    ops::{BitAnd, BitOr, Not},
+};
 
 use crate::{
     WriteExt as _,
@@ -88,6 +91,20 @@ impl Filter<'_> {
         })?;
 
         Ok(())
+    }
+}
+impl BitAnd for Filter<'_> {
+    type Output = Self;
+
+    fn bitand(self, rhs: Self) -> Self::Output {
+        Self::And(vec![self, rhs])
+    }
+}
+impl BitOr for Filter<'_> {
+    type Output = Self;
+
+    fn bitor(self, rhs: Self) -> Self::Output {
+        Self::Or(vec![self, rhs])
     }
 }
 impl Not for Filter<'_> {
