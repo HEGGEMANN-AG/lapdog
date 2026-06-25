@@ -23,11 +23,6 @@ impl LdapConnection {
         let ResponseProtocolOp::Modify = ResponseProtocolOp::read_from(&mut response.as_slice())? else {
             return Err(ModifyError::InvalidSchema);
         };
-        read_response(&mut response.as_slice()).map_err(|err| match err {
-            ReadModifyError::InvalidSchema => ModifyError::InvalidSchema,
-            ReadModifyError::Io(error) => ModifyError::Io(error),
-            ReadModifyError::ServerError { code, message } => ModifyError::ServerError { code, message },
-        })?;
         Ok(())
     }
 }
@@ -179,11 +174,8 @@ pub(crate) fn read_response<R: Read>(mut r: R) -> Result<(), ReadModifyError> {
     let diagnostics_len = read_length(&mut r)?;
     let mut message = vec![0; diagnostics_len];
     r.read_exact(&mut message)?;
-    let diagnostics_message = String::from_utf8_lossy(&message).to_string();
-    Err(ReadModifyError::ServerError {
-        code,
-        message: diagnostics_message,
-    })
+    let message = String::from_utf8_lossy(&message).to_string();
+    Err(ReadModifyError::ServerError { code, message })
 }
 
 #[derive(Debug)]
