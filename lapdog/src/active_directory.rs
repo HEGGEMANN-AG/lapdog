@@ -26,7 +26,7 @@ pub mod controls {
             control_value,
         }
     }
-    /// Remember to user Present("objectClass") as filter.
+    /// Remember to use Present("objectClass") as filter.
     pub fn server_notification(criticality: bool) -> ControlRef<'static> {
         ControlRef {
             oid: super::oids::LDAP_SERVER_NOTIFICATION,
