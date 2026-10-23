@@ -447,9 +447,9 @@ dependencies = [
 
 [[package]]
 name = "kenobi"
-version = "0.4.0"
+version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a0102e492d6f5efa2b81e95ece8890aaea68c8ff0d31352053927db6e2b7e0b2"
+checksum = "819603301e474babe7f8ec58043c14bc1356d6bea629ab16af9136986b5ee295"
 dependencies = [
  "kenobi-core",
  "kenobi-unix",
@@ -480,9 +480,9 @@ dependencies = [
 
 [[package]]
 name = "kenobi-windows"
-version = "0.3.0"
+version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "845e2bc9d3f9aaf2c26f456154537676f169758a3833dc5dd79b68259097c3fa"
+checksum = "7c03a6fd6475483066b25e7e5330d257e54da0931efd5ed3eda6b794628e9ae5"
 dependencies = [
  "kenobi-core",
  "windows",
@@ -500,6 +500,13 @@ dependencies = [
  "tokio",
  "tokio-native-tls",
  "tokio-rustls",
+]
+
+[[package]]
+name = "lapdog-active-directory"
+version = "0.1.0"
+dependencies = [
+ "lapdog",
 ]
 
 [[package]]
