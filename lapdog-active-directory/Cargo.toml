@@ -1,0 +1,9 @@
+[package]
+name = "lapdog-active-directory"
+version = "0.1.0"
+edition = "2024"
+authors.workspace = true
+description = "Helper types and trait implementations for lapdog for Active Directory"
+
+[dependencies]
+lapdog = "0.6.0"

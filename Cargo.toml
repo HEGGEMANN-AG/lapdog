@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["lapdog", "lapdog-derive"]
+members = ["lapdog", "lapdog-active-directory", "lapdog-derive"]
 default-members = ["lapdog"]
 
 [workspace.package]
