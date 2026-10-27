@@ -7,3 +7,4 @@ description = "Helper types and trait implementations for lapdog for Active Dire
 
 [dependencies]
 lapdog = { version = "0.7", path = "../lapdog", default-features = false, features = ["from_octets"] }
+uuid = "1.29.0"
